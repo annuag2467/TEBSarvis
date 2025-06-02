@@ -1,94 +1,95 @@
 # TEBSarvis
+
 tebsarvis-multi-agent/
 ├── backend/
-│   ├── agents/
-│   │   ├── core/
-│   │   │   ├── base_agent.py                    # Abstract base class for all agents
-│   │   │   ├── agent_communication.py           # Inter-agent messaging protocol
-│   │   │   ├── message_types.py                 # Message schemas and types
-│   │   │   └── agent_registry.py                # Agent discovery and registration
-│   │   ├── reactive/
-│   │   │   ├── resolution_agent.py              # GPT-4 + RAG solution generator
-│   │   │   ├── search_agent.py                  # Vector + semantic search engine
-│   │   │   ├── conversation_agent.py            # NLP conversation handler
-│   │   │   └── context_agent.py                 # Metadata enrichment processor
-│   │   ├── proactive/
-│   │   │   ├── pattern_detection_agent.py       # ML clustering and trend analysis
-│   │   │   └── alerting_agent.py                # Rule-based alerting system
-│   │   └── orchestrator/
-│   │       ├── agent_coordinator.py             # Central coordination hub
-│   │       ├── task_dispatcher.py               # Task routing and load balancing
-│   │       ├── workflow_engine.py               # Multi-agent workflow management
-│   │       └── collaboration_manager.py         # Agent collaboration protocols
-│   ├── azure-functions/
+│   ├── agents/                                # All AI agents organized by type
+│   │   ├── core/                              # Foundational agent components
+│   │   │   ├── base_agent.py                  # Abstract base class for agents
+│   │   │   ├── agent_communication.py         # Messaging protocols (inter-agent)
+│   │   │   ├── message_types.py               # Message formats and enums
+│   │   │   └── agent_registry.py              # Dynamic agent discovery/registration
+│   │   ├── reactive/                          # Agents that respond to requests
+│   │   │   ├── resolution_agent.py            # RAG + GPT-4 based resolution generator
+│   │   │   ├── search_agent.py                # Vector & semantic similarity search
+│   │   │   ├── conversation_agent.py          # Chat-based agent using LLM
+│   │   │   └── context_agent.py               # Adds metadata/context for LLMs
+│   │   ├── proactive/                         # Autonomous, monitoring-focused agents
+│   │   │   ├── pattern_detection_agent.py     # Clustering/anomaly detection
+│   │   │   └── alerting_agent.py              # Rule-based proactive alerts
+│   │   └── orchestrator/                      # Coordinates multi-agent workflows
+│   │       ├── agent_coordinator.py           # Main task router / controller
+│   │       ├── task_dispatcher.py             # Load-balanced task dispatch
+│   │       ├── workflow_engine.py             # Composable workflow executor
+│   │       └── collaboration_manager.py       # Agent-to-agent collaboration protocols
+│   ├── azure-functions/                       # Serverless Azure Function APIs
 │   │   ├── agent-orchestrator/
-│   │   │   ├── function_app.py                  # Main orchestration endpoint
+│   │   │   ├── function_app.py                # Central orchestration entrypoint
 │   │   │   └── host.json
 │   │   ├── recommend-resolution/
-│   │   │   ├── function_app.py                  # Resolution Agent API endpoint
+│   │   │   ├── function_app.py                # ResolutionAgent API wrapper
 │   │   │   └── host.json
 │   │   ├── search-similar-incidents/
-│   │   │   ├── function_app.py                  # Search Agent API endpoint
+│   │   │   ├── function_app.py                # SearchAgent API wrapper
 │   │   │   └── host.json
 │   │   ├── ask-assistant/
-│   │   │   ├── function_app.py                  # Conversation Agent API endpoint
+│   │   │   ├── function_app.py                # ConversationAgent API wrapper
 │   │   │   └── host.json
 │   │   ├── detect-patterns/
-│   │   │   ├── function_app.py                  # Pattern Detection Agent API
+│   │   │   ├── function_app.py                # PatternDetectionAgent API
 │   │   │   └── host.json
 │   │   ├── proactive-alerts/
-│   │   │   ├── function_app.py                  # Alerting Agent API endpoint
+│   │   │   ├── function_app.py                # AlertingAgent API endpoint
 │   │   │   └── host.json
 │   │   └── shared/
-│   │       ├── azure_clients.py                 # Azure service connectors
-│   │       ├── rag_pipeline.py                  # RAG implementation
-│   │       └── agent_utils.py                   # Shared agent utilities
-│   ├── workflows/
-│   │   ├── incident_resolution_workflow.py      # Multi-agent incident handling
-│   │   ├── proactive_monitoring_workflow.py     # Pattern detection pipeline
-│   │   └── conversation_workflow.py             # Chat interaction flow
+│   │       ├── azure_clients.py               # Azure service connectors (Cognitive, Search)
+│   │       ├── rag_pipeline.py                # RAG logic integration
+│   │       └── agent_utils.py                 # Utilities for all functions
+│   ├── workflows/                             # Multi-agent workflow compositions
+│   │   ├── incident_resolution_workflow.py    # Full resolution pipeline
+│   │   ├── proactive_monitoring_workflow.py   # Auto alert/pattern detection
+│   │   └── conversation_workflow.py           # Chat + search + resolve chain
 │   ├── data-processing/
-│   │   ├── data_ingestion.py                    # Excel data processor
-│   │   ├── vector_embeddings.py                 # Embedding generation
-│   │   └── knowledge_base_builder.py            # Search index creation
+│   │   ├── data_ingestion.py                  # Converts Excel to structured JSON
+│   │   ├── vector_embeddings.py               # Embedding generator (e.g. OpenAI/BGE)
+│   │   └── knowledge_base_builder.py          # Index builder (FAISS / Azure AI Search)
 │   └── config/
-│       ├── agent_config.py                      # Agent configuration settings
-│       └── azure_config.py                      # Azure service settings
+│       ├── agent_config.py                    # Agent-specific parameters
+│       └── azure_config.py                    # Azure service credentials/settings
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── AgentDashboard.vue               # Multi-agent status dashboard
-│   │   │   ├── ChatInterface.vue                # Conversation Agent UI
-│   │   │   ├── IncidentForm.vue                 # Resolution workflow UI
-│   │   │   ├── PatternInsights.vue              # Pattern Detection Agent UI
-│   │   │   ├── AlertsPanel.vue                  # Alerting Agent UI
-│   │   │   └── AgentCollaboration.vue           # Agent interaction visualization
+│   │   │   ├── AgentDashboard.vue             # Overview dashboard of all agents
+│   │   │   ├── ChatInterface.vue              # UI for talking to Conversation Agent
+│   │   │   ├── IncidentForm.vue               # Incident submission form
+│   │   │   ├── PatternInsights.vue            # UI for detected patterns
+│   │   │   ├── AlertsPanel.vue                # Shows triggered alerts
+│   │   │   └── AgentCollaboration.vue         # Visualizes agent interaction graph
 │   │   ├── services/
-│   │   │   ├── agent_api.js                     # Agent API client
-│   │   │   ├── websocket.js                     # Real-time agent communication
-│   │   │   └── workflow_client.js               # Workflow execution client
+│   │   │   ├── agent_api.js                   # Agent API interface
+│   │   │   ├── websocket.js                   # Live updates from agents
+│   │   │   └── workflow_client.js             # Workflow execution handler
 │   │   ├── store/
-│   │   │   ├── agents.js                        # Agent state management
-│   │   │   ├── workflows.js                     # Workflow state management
-│   │   │   └── incidents.js                     # Incident data management
-│   │   └── App.vue
-│   └── package.json
+│   │   │   ├── agents.js                      # Vuex store: agents
+│   │   │   ├── workflows.js                   # Vuex store: workflows
+│   │   │   └── incidents.js                   # Vuex store: incident tracking
+│   │   └── App.vue                            # Main app entry
+│   └── package.json                           # Vue app config
 ├── data/
 │   ├── raw/
-│   │   └── CaseDataWithResolution.xlsx
+│   │   └── CaseDataWithResolution.xlsx        # Original incident records
 │   ├── processed/
-│   │   ├── incidents.json
-│   │   ├── embeddings.json
-│   │   └── knowledge_base.json
+│   │   ├── incidents.json                     # Cleaned incident data
+│   │   ├── embeddings.json                    # Precomputed vector embeddings
+│   │   └── knowledge_base.json                # Structured KB for search
 │   └── agent-training/
-│       ├── resolution_patterns.json
-│       ├── conversation_examples.json
-│       └── pattern_samples.json
+│       ├── resolution_patterns.json           # Prompt engineering data
+│       ├── conversation_examples.json         # LLM chat finetuning examples
+│       └── pattern_samples.json               # Samples for pattern detection
 ├── scripts/
-│   ├── setup_agents.py                          # Agent initialization script
-│   ├── deploy_multi_agent.sh                    # Multi-agent deployment
-│   ├── test_agent_communication.py              # Agent interaction testing
-│   └── monitor_agents.py                        # Agent health monitoring
+│   ├── setup_agents.py                        # Registers all agents
+│   ├── deploy_multi_agent.sh                  # Deploy script (CLI/Azure)
+│   ├── test_agent_communication.py            # Simulates agent chat/test
+│   └── monitor_agents.py                      # Health checks and logs
 ├── tests/
 │   ├── unit/
 │   │   ├── test_agents/
@@ -105,11 +106,10 @@ tebsarvis-multi-agent/
 │       ├── test_multi_agent_workflows.py
 │       └── test_agent_collaboration.py
 ├── docs/
-│   ├── agent_specifications.md
-│   ├── workflow_documentation.md
-│   ├── api_documentation.md
-│   └── deployment_guide.md
-├── .env.example
-├── requirements.txt
-└── README.md
-
+│   ├── agent_specifications.md                # Role and flow of each agent
+│   ├── workflow_documentation.md             # Step-by-step workflow details
+│   ├── api_documentation.md                  # Azure Function endpoints
+│   └── deployment_guide.md                   # Guide to deploy all modules
+├── .env.example                               # Sample env file
+├── requirements.txt                           # Python deps
+└── README.md                                  # Project overview (You're here!)
