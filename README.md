@@ -1,5 +1,5 @@
 # TEBSarvis
-
+```plaintext
 tebsarvis-multi-agent/
 ├── backend/
 │   ├── agents/                                # All AI agents organized by type
@@ -113,3 +113,4 @@ tebsarvis-multi-agent/
 ├── .env.example                               # Sample env file
 ├── requirements.txt                           # Python deps
 └── README.md                                  # Project overview (You're here!)
+```
