@@ -1,449 +1,749 @@
 """
-Data Ingestion Pipeline for TEBSarvis Multi-Agent System
-Processes Excel data, generates embeddings, and indexes for search.
+Data Ingestion Module for TEBSarvis Multi-Agent System
+Converts Excel incident data to structured JSON format for processing.
 """
 
-import asyncio
-import logging
 import pandas as pd
-import numpy as np
-from typing import Dict, Any, List, Optional
-from datetime import datetime
 import json
-import re
-import uuid
+import logging
+import asyncio
 import os
+import sys
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
+import uuid
+import re
+from pathlib import Path
 
-from .azure_clients import AzureClientManager
+# Add the backend path to sys.path to import shared utilities
+backend_path = os.path.join(os.path.dirname(__file__), '..', 'azure-functions', 'shared')
+sys.path.append(backend_path)
 
-class DataIngestionPipeline:
+from azure_clients import AzureClientManager
+from agent_utils import TextProcessor, DataTransformer, ValidationError
+
+class DataIngestionProcessor:
     """
-    Pipeline for processing Excel incident data and preparing it for the multi-agent system.
-    Handles data cleaning, embedding generation, and search index creation.
+    Processes raw incident data from Excel files and converts to structured JSON format.
+    Handles data cleaning, validation, and enrichment.
     """
     
     def __init__(self):
-        self.azure_manager = AzureClientManager()
         self.logger = logging.getLogger("data_ingestion")
+        self.azure_manager = AzureClientManager()
+        self.text_processor = TextProcessor()
+        self.data_transformer = DataTransformer()
         
-        # Processing statistics
-        self.stats = {
+        # Data processing configuration
+        self.required_columns = [
+            'Case ID', 'Summary', 'Description', 'Category', 
+            'Severity', 'Priority', 'Date Submitted', 'Reporter'
+        ]
+        
+        # Column mapping for normalization
+        self.column_mapping = {
+            'Case ID': 'id',
+            'Summary': 'summary',
+            'Description': 'description',
+            'Category': 'category',
+            'Severity': 'severity',
+            'Priority': 'priority',
+            'Date Submitted': 'date_submitted',
+            'Reporter': 'reporter',
+            'Resolution': 'resolution',
+            'Resolution Date': 'resolution_date',
+            'Status': 'status',
+            'Assigned To': 'assigned_to',
+            'Tags': 'tags'
+        }
+        
+        # Data validation rules
+        self.validation_rules = {
+            'summary': {'min_length': 10, 'max_length': 500},
+            'description': {'min_length': 20, 'max_length': 2000},
+            'category': {'required': True},
+            'severity': {'valid_values': ['Low', 'Medium', 'High', 'Critical']},
+            'priority': {'valid_values': ['Low', 'Medium', 'High', 'Critical']}
+        }
+        
+        # Statistics tracking
+        self.processing_stats = {
             'total_records': 0,
             'processed_records': 0,
             'failed_records': 0,
-            'embeddings_generated': 0,
-            'records_indexed': 0
+            'validation_errors': 0,
+            'data_quality_score': 0.0
         }
     
-    async def process_excel_file(self, file_path: str) -> Dict[str, Any]:
+    async def initialize(self):
+        """Initialize the data ingestion processor"""
+        try:
+            await self.azure_manager.initialize()
+            self.logger.info("Data Ingestion Processor initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize Data Ingestion Processor: {str(e)}")
+            raise
+    
+    async def process_excel_file(self, file_path: str, output_path: str = None) -> Dict[str, Any]:
         """
-        Process the Excel file containing incident data.
+        Process Excel file and convert to structured JSON.
         
         Args:
             file_path: Path to the Excel file
+            output_path: Optional output path for JSON file
             
         Returns:
-            Processing results and statistics
+            Processing results with statistics
         """
         try:
-            self.logger.info(f"Starting processing of Excel file: {file_path}")
+            self.logger.info(f"Starting to process Excel file: {file_path}")
+            
+            # Validate input file
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"Excel file not found: {file_path}")
             
             # Read Excel file
-            df = pd.read_excel(file_path)
-            self.stats['total_records'] = len(df)
+            df = await self._read_excel_file(file_path)
             
-            self.logger.info(f"Loaded {len(df)} records from Excel file")
+            # Validate and clean data
+            cleaned_df = await self._clean_and_validate_data(df)
             
-            # Clean and validate data
-            cleaned_df = await self._clean_data(df)
+            # Convert to structured format
+            structured_data = await self._convert_to_structured_format(cleaned_df)
             
-            # Process each record
-            processed_records = []
-            failed_records = []
+            # Enrich data with additional processing
+            enriched_data = await self._enrich_incident_data(structured_data)
             
-            for index, row in cleaned_df.iterrows():
-                try:
-                    processed_record = await self._process_incident_record(row, index)
-                    if processed_record:
-                        processed_records.append(processed_record)
-                        self.stats['processed_records'] += 1
-                    else:
-                        failed_records.append({'index': index, 'error': 'Processing failed'})
-                        self.stats['failed_records'] += 1
-                        
-                except Exception as e:
-                    self.logger.error(f"Error processing record {index}: {str(e)}")
-                    failed_records.append({'index': index, 'error': str(e)})
-                    self.stats['failed_records'] += 1
+            # Save to JSON if output path provided
+            if output_path:
+                await self._save_to_json(enriched_data, output_path)
             
-            # Store processed records in Cosmos DB and index for search
-            storage_results = await self._store_and_index_records(processed_records)
+            # Calculate final statistics
+            self._calculate_processing_statistics(len(df), len(enriched_data))
             
-            results = {
-                'processing_stats': self.stats,
-                'processed_records': len(processed_records),
-                'failed_records': len(failed_records),
-                'storage_results': storage_results,
-                'sample_records': processed_records[:5] if processed_records else [],
+            self.logger.info(f"Successfully processed {len(enriched_data)} incidents")
+            
+            return {
+                'incidents': enriched_data,
+                'statistics': self.processing_stats,
                 'processing_metadata': {
-                    'file_path': file_path,
-                    'timestamp': datetime.now().isoformat(),
-                    'pipeline_version': '1.0.0'
+                    'source_file': file_path,
+                    'output_file': output_path,
+                    'processed_at': datetime.now().isoformat(),
+                    'processor_version': '1.0.0'
                 }
             }
-            
-            self.logger.info(f"Processing completed. Processed: {len(processed_records)}, Failed: {len(failed_records)}")
-            return results
             
         except Exception as e:
             self.logger.error(f"Error processing Excel file: {str(e)}")
             raise
     
-    async def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Clean and validate the incident data"""
+    async def _read_excel_file(self, file_path: str) -> pd.DataFrame:
+        """Read and parse Excel file"""
         try:
-            self.logger.info("Cleaning and validating data...")
+            # Try different sheet names if the default doesn't work
+            sheet_names = [None, 'Sheet1', 'Data', 'Incidents', 'Cases']
             
-            # Make a copy to avoid modifying original
-            cleaned_df = df.copy()
+            df = None
+            for sheet_name in sheet_names:
+                try:
+                    df = pd.read_excel(file_path, sheet_name=sheet_name)
+                    self.logger.info(f"Successfully read Excel file with sheet: {sheet_name}")
+                    break
+                except Exception as e:
+                    if sheet_name is None:
+                        self.logger.warning(f"Could not read default sheet: {str(e)}")
+                    continue
             
-            # Standard column name mapping (adjust based on your Excel structure)
-            column_mapping = {
-                'Incident ID': 'incident_id',
-                'Summary': 'summary',
-                'Description': 'description',
-                'Category': 'category',
-                'Priority': 'priority',
-                'Severity': 'severity',
-                'Date Submitted': 'date_submitted',
-                'Reporter': 'reporter',
-                'Resolution': 'resolution',
-                'Resolution Date': 'resolution_date',
-                'Status': 'status'
-            }
+            if df is None:
+                raise ValueError("Could not read any sheet from the Excel file")
             
-            # Rename columns to standard format
-            cleaned_df = cleaned_df.rename(columns=column_mapping)
+            # Basic validation
+            if df.empty:
+                raise ValueError("Excel file is empty")
             
-            # Fill missing values
-            cleaned_df['summary'] = cleaned_df['summary'].fillna('No summary provided')
-            cleaned_df['description'] = cleaned_df['description'].fillna('No description provided')
-            cleaned_df['category'] = cleaned_df['category'].fillna('General')
-            cleaned_df['priority'] = cleaned_df['priority'].fillna('Medium')
-            cleaned_df['severity'] = cleaned_df['severity'].fillna('3 - Medium')
-            cleaned_df['resolution'] = cleaned_df['resolution'].fillna('')
+            self.processing_stats['total_records'] = len(df)
+            self.logger.info(f"Read {len(df)} records from Excel file")
             
-            # Clean text fields
-            text_columns = ['summary', 'description', 'resolution']
-            for col in text_columns:
-                if col in cleaned_df.columns:
-                    cleaned_df[col] = cleaned_df[col].astype(str)
-                    cleaned_df[col] = cleaned_df[col].apply(self._clean_text)
+            return df
             
-            # Standardize date format
-            if 'date_submitted' in cleaned_df.columns:
-                cleaned_df['date_submitted'] = pd.to_datetime(
-                    cleaned_df['date_submitted'], 
-                    errors='coerce'
-                ).dt.strftime('%d-%m-%Y %H:%M')
+        except Exception as e:
+            self.logger.error(f"Error reading Excel file: {str(e)}")
+            raise
+    
+    async def _clean_and_validate_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean and validate the dataframe"""
+        try:
+            self.logger.info("Starting data cleaning and validation")
             
-            if 'resolution_date' in cleaned_df.columns:
-                cleaned_df['resolution_date'] = pd.to_datetime(
-                    cleaned_df['resolution_date'], 
-                    errors='coerce'
-                ).dt.strftime('%d-%m-%Y %H:%M')
+            # Normalize column names
+            df = self._normalize_column_names(df)
+            
+            # Check for required columns
+            missing_columns = [col for col in self.required_columns if col not in df.columns]
+            if missing_columns:
+                self.logger.warning(f"Missing columns: {missing_columns}")
             
             # Remove completely empty rows
-            cleaned_df = cleaned_df.dropna(subset=['summary', 'description'], how='all')
+            initial_count = len(df)
+            df = df.dropna(how='all')
+            removed_count = initial_count - len(df)
+            if removed_count > 0:
+                self.logger.info(f"Removed {removed_count} completely empty rows")
             
-            # Generate incident IDs if missing
-            if 'incident_id' not in cleaned_df.columns or cleaned_df['incident_id'].isna().any():
-                cleaned_df['incident_id'] = cleaned_df.apply(
-                    lambda x: f"INC{str(x.name + 1).zfill(6)}", axis=1
-                )
+            # Clean text fields
+            text_columns = ['Summary', 'Description', 'Category', 'Reporter']
+            for col in text_columns:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).apply(self.text_processor.clean_text)
             
-            self.logger.info(f"Data cleaning completed. {len(cleaned_df)} valid records remain")
-            return cleaned_df
+            # Validate data quality
+            df = await self._validate_data_quality(df)
+            
+            self.logger.info(f"Data cleaning completed. {len(df)} records remaining")
+            return df
             
         except Exception as e:
-            self.logger.error(f"Error cleaning data: {str(e)}")
+            self.logger.error(f"Error in data cleaning: {str(e)}")
             raise
     
-    def _clean_text(self, text: str) -> str:
-        """Clean and normalize text content"""
-        if pd.isna(text) or text == 'nan':
-            return ''
-        
-        text = str(text)
-        
-        # Remove extra whitespace
-        text = re.sub(r'\s+', ' ', text)
-        text = text.strip()
-        
-        # Remove special characters but keep basic punctuation
-        text = re.sub(r'[^\w\s\.\,\;\:\!\?\-\(\)]', '', text)
-        
-        return text
-    
-    async def _process_incident_record(self, row: pd.Series, index: int) -> Optional[Dict[str, Any]]:
-        """Process a single incident record"""
+    def _normalize_column_names(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Normalize column names to handle variations"""
         try:
-            # Extract data from row
-            incident_data = {
-                'id': str(row.get('incident_id', f"INC{str(index + 1).zfill(6)}")),
-                'summary': str(row.get('summary', '')),
-                'description': str(row.get('description', '')),
-                'category': str(row.get('category', 'General')),
-                'priority': str(row.get('priority', 'Medium')),
-                'severity': str(row.get('severity', '3 - Medium')),
-                'date_submitted': str(row.get('date_submitted', '')),
-                'reporter': str(row.get('reporter', '')),
-                'resolution': str(row.get('resolution', '')),
-                'resolution_date': str(row.get('resolution_date', '')),
-                'status': str(row.get('status', 'Open')),
-                'created_at': datetime.now().isoformat(),
-                'data_source': 'excel_import'
-            }
+            # Create a mapping of found columns to standard names
+            column_map = {}
             
-            # Generate embedding for search
-            content_for_embedding = f"{incident_data['summary']} {incident_data['description']}"
-            if incident_data['resolution']:
-                content_for_embedding += f" {incident_data['resolution']}"
+            for col in df.columns:
+                col_lower = col.lower().strip()
+                
+                # Map common variations
+                if 'case' in col_lower and 'id' in col_lower:
+                    column_map[col] = 'Case ID'
+                elif 'summary' in col_lower or 'title' in col_lower:
+                    column_map[col] = 'Summary'
+                elif 'description' in col_lower or 'detail' in col_lower:
+                    column_map[col] = 'Description'
+                elif 'category' in col_lower or 'type' in col_lower:
+                    column_map[col] = 'Category'
+                elif 'severity' in col_lower:
+                    column_map[col] = 'Severity'
+                elif 'priority' in col_lower:
+                    column_map[col] = 'Priority'
+                elif 'date' in col_lower and ('submit' in col_lower or 'created' in col_lower):
+                    column_map[col] = 'Date Submitted'
+                elif 'reporter' in col_lower or 'requester' in col_lower:
+                    column_map[col] = 'Reporter'
+                elif 'resolution' in col_lower and 'date' not in col_lower:
+                    column_map[col] = 'Resolution'
+                elif 'resolution' in col_lower and 'date' in col_lower:
+                    column_map[col] = 'Resolution Date'
+                elif 'status' in col_lower:
+                    column_map[col] = 'Status'
+                elif 'assign' in col_lower:
+                    column_map[col] = 'Assigned To'
+                elif 'tag' in col_lower:
+                    column_map[col] = 'Tags'
             
-            # Generate embedding
-            embedding = await self.azure_manager.get_embeddings(content_for_embedding)
-            incident_data['embedding'] = embedding
-            self.stats['embeddings_generated'] += 1
+            # Rename columns
+            df = df.rename(columns=column_map)
             
-            # Add metadata for better categorization
-            incident_data['metadata'] = {
-                'word_count': len(content_for_embedding.split()),
-                'has_resolution': bool(incident_data['resolution'].strip()),
-                'text_length': len(content_for_embedding),
-                'processing_timestamp': datetime.now().isoformat()
-            }
-            
-            return incident_data
+            self.logger.info(f"Normalized {len(column_map)} column names")
+            return df
             
         except Exception as e:
-            self.logger.error(f"Error processing record at index {index}: {str(e)}")
+            self.logger.error(f"Error normalizing column names: {str(e)}")
+            return df
+    
+    async def _validate_data_quality(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Validate data quality and mark issues"""
+        try:
+            validation_issues = []
+            
+            for index, row in df.iterrows():
+                row_issues = []
+                
+                # Validate each field according to rules
+                for field, rules in self.validation_rules.items():
+                    if field in df.columns:
+                        value = row[field]
+                        
+                        # Required field validation
+                        if rules.get('required', False) and (pd.isna(value) or str(value).strip() == ''):
+                            row_issues.append(f"{field}_missing")
+                        
+                        # Length validation
+                        if not pd.isna(value):
+                            value_str = str(value).strip()
+                            if 'min_length' in rules and len(value_str) < rules['min_length']:
+                                row_issues.append(f"{field}_too_short")
+                            if 'max_length' in rules and len(value_str) > rules['max_length']:
+                                row_issues.append(f"{field}_too_long")
+                        
+                        # Valid values validation
+                        if 'valid_values' in rules and not pd.isna(value):
+                            if str(value).strip() not in rules['valid_values']:
+                                row_issues.append(f"{field}_invalid_value")
+                
+                if row_issues:
+                    validation_issues.append({
+                        'index': index,
+                        'issues': row_issues
+                    })
+                    self.processing_stats['validation_errors'] += 1
+            
+            # Log validation issues
+            if validation_issues:
+                self.logger.warning(f"Found {len(validation_issues)} rows with validation issues")
+                
+                # For now, we'll keep all rows but log the issues
+                # In production, you might want to filter out severely invalid rows
+                
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"Error in data validation: {str(e)}")
+            return df
+    
+    async def _convert_to_structured_format(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """Convert DataFrame to structured incident format"""
+        try:
+            structured_incidents = []
+            
+            for index, row in df.iterrows():
+                try:
+                    # Create base incident structure
+                    incident = {}
+                    
+                    # Map columns to standardized fields
+                    for excel_col, json_field in self.column_mapping.items():
+                        if excel_col in df.columns:
+                            value = row[excel_col]
+                            
+                            # Handle different data types
+                            if pd.isna(value):
+                                incident[json_field] = None
+                            elif json_field in ['date_submitted', 'resolution_date']:
+                                # Handle date fields
+                                incident[json_field] = self._parse_date(value)
+                            elif json_field in ['tags']:
+                                # Handle list fields
+                                incident[json_field] = self._parse_tags(value)
+                            else:
+                                # Handle string fields
+                                incident[json_field] = str(value).strip() if value else None
+                    
+                    # Generate ID if missing
+                    if not incident.get('id'):
+                        incident['id'] = f"INC_{str(uuid.uuid4())[:8]}"
+                    
+                    # Add processing metadata
+                    incident['processing_metadata'] = {
+                        'source_row': index,
+                        'processed_at': datetime.now().isoformat(),
+                        'data_version': '1.0.0'
+                    }
+                    
+                    # Add derived fields
+                    incident['text_content'] = self._create_text_content(incident)
+                    incident['keywords'] = self.text_processor.extract_keywords(incident['text_content'])
+                    
+                    structured_incidents.append(incident)
+                    self.processing_stats['processed_records'] += 1
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing row {index}: {str(e)}")
+                    self.processing_stats['failed_records'] += 1
+                    continue
+            
+            self.logger.info(f"Converted {len(structured_incidents)} incidents to structured format")
+            return structured_incidents
+            
+        except Exception as e:
+            self.logger.error(f"Error converting to structured format: {str(e)}")
+            raise
+    
+    async def _enrich_incident_data(self, incidents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Enrich incident data with additional processing"""
+        try:
+            self.logger.info("Starting data enrichment process")
+            
+            enriched_incidents = []
+            
+            for incident in incidents:
+                try:
+                    # Add data quality score
+                    incident['data_quality_score'] = self._calculate_data_quality_score(incident)
+                    
+                    # Add complexity analysis
+                    incident['complexity_analysis'] = self._analyze_incident_complexity(incident)
+                    
+                    # Add category insights
+                    incident['category_insights'] = self._extract_category_insights(incident)
+                    
+                    # Add urgency indicators
+                    incident['urgency_indicators'] = self._extract_urgency_indicators(incident)
+                    
+                    # Prepare for embedding generation (will be done separately)
+                    incident['ready_for_embedding'] = True
+                    
+                    enriched_incidents.append(incident)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error enriching incident {incident.get('id', 'unknown')}: {str(e)}")
+                    # Keep the original incident without enrichment
+                    enriched_incidents.append(incident)
+            
+            self.logger.info(f"Enriched {len(enriched_incidents)} incidents")
+            return enriched_incidents
+            
+        except Exception as e:
+            self.logger.error(f"Error in data enrichment: {str(e)}")
+            return incidents
+    
+    def _parse_date(self, date_value) -> Optional[str]:
+        """Parse date value to ISO format string"""
+        try:
+            if pd.isna(date_value):
+                return None
+            
+            # If it's already a datetime object
+            if isinstance(date_value, pd.Timestamp):
+                return date_value.isoformat()
+            
+            # If it's a string, try to parse it
+            if isinstance(date_value, str):
+                # Try common date formats
+                date_formats = [
+                    '%Y-%m-%d',
+                    '%d-%m-%Y',
+                    '%m/%d/%Y',
+                    '%d/%m/%Y',
+                    '%Y-%m-%d %H:%M:%S',
+                    '%d-%m-%Y %H:%M'
+                ]
+                
+                for fmt in date_formats:
+                    try:
+                        parsed_date = datetime.strptime(date_value.strip(), fmt)
+                        return parsed_date.isoformat()
+                    except ValueError:
+                        continue
+            
+            # If all parsing attempts fail, return the original value as string
+            return str(date_value)
+            
+        except Exception:
             return None
     
-    async def _store_and_index_records(self, records: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Store records in Cosmos DB and index for search"""
+    def _parse_tags(self, tags_value) -> List[str]:
+        """Parse tags from various formats"""
         try:
-            self.logger.info(f"Storing {len(records)} records in Cosmos DB and search index...")
+            if pd.isna(tags_value) or not tags_value:
+                return []
             
-            cosmos_results = {'stored': 0, 'failed': 0}
-            search_results = {'indexed': 0, 'failed': 0}
+            tags_str = str(tags_value).strip()
             
-            # Process in batches
-            batch_size = 10
-            for i in range(0, len(records), batch_size):
-                batch = records[i:i + batch_size]
-                
-                # Store in Cosmos DB
-                for record in batch:
-                    try:
-                        await self.azure_manager.store_incident(record)
-                        cosmos_results['stored'] += 1
-                    except Exception as e:
-                        self.logger.error(f"Failed to store record {record['id']}: {str(e)}")
-                        cosmos_results['failed'] += 1
-                
-                # Index for search
-                search_documents = []
-                for record in batch:
-                    try:
-                        search_doc = self._prepare_search_document(record)
-                        search_documents.append(search_doc)
-                    except Exception as e:
-                        self.logger.error(f"Failed to prepare search doc for {record['id']}: {str(e)}")
-                        search_results['failed'] += 1
-                
-                # Batch index
-                if search_documents:
-                    try:
-                        batch_stats = await self.azure_manager.search_client.index_documents_batch(search_documents)
-                        search_results['indexed'] += batch_stats.get('succeeded', 0)
-                        search_results['failed'] += batch_stats.get('failed', 0)
-                    except Exception as e:
-                        self.logger.error(f"Failed to index batch: {str(e)}")
-                        search_results['failed'] += len(search_documents)
-                
-                # Small delay between batches
-                await asyncio.sleep(0.1)
+            # Split by common delimiters
+            delimiters = [',', ';', '|', '\n']
+            for delimiter in delimiters:
+                if delimiter in tags_str:
+                    tags = [tag.strip() for tag in tags_str.split(delimiter)]
+                    return [tag for tag in tags if tag]  # Remove empty tags
             
-            self.stats['records_indexed'] = search_results['indexed']
+            # If no delimiters found, return as single tag
+            return [tags_str] if tags_str else []
             
-            return {
-                'cosmos_db': cosmos_results,
-                'search_index': search_results,
-                'total_processed': len(records)
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error storing and indexing records: {str(e)}")
-            raise
+        except Exception:
+            return []
     
-    def _prepare_search_document(self, incident: Dict[str, Any]) -> Dict[str, Any]:
-        """Prepare incident data for search indexing"""
-        return {
-            'id': incident['id'],
-            'content': f"{incident['summary']} {incident['description']} {incident['resolution']}",
-            'embedding': incident['embedding'],
-            'metadata': {
-                'category': incident['category'],
-                'priority': incident['priority'],
-                'severity': incident['severity'],
-                'date_submitted': incident['date_submitted'],
-                'resolution': incident['resolution'],
-                'status': incident['status'],
-                'has_resolution': incident['metadata']['has_resolution']
-            }
-        }
-    
-    async def generate_knowledge_base(self, file_path: str) -> Dict[str, Any]:
-        """
-        Generate a comprehensive knowledge base from the Excel data.
+    def _create_text_content(self, incident: Dict[str, Any]) -> str:
+        """Create combined text content for embedding generation"""
+        text_parts = []
         
-        Args:
-            file_path: Path to the Excel file
-            
-        Returns:
-            Knowledge base generation results
-        """
+        # Add summary
+        if incident.get('summary'):
+            text_parts.append(incident['summary'])
+        
+        # Add description
+        if incident.get('description'):
+            text_parts.append(incident['description'])
+        
+        # Add category
+        if incident.get('category'):
+            text_parts.append(f"Category: {incident['category']}")
+        
+        # Add resolution if available
+        if incident.get('resolution'):
+            text_parts.append(f"Resolution: {incident['resolution']}")
+        
+        return " ".join(text_parts)
+    
+    def _calculate_data_quality_score(self, incident: Dict[str, Any]) -> float:
+        """Calculate data quality score for an incident"""
         try:
-            # Process the Excel file first
-            processing_results = await self.process_excel_file(file_path)
+            score = 0.0
+            max_score = 0.0
             
-            # Generate additional knowledge artifacts
-            knowledge_base = {
-                'categories': await self._extract_categories(),
-                'common_issues': await self._identify_common_issues(),
-                'resolution_patterns': await self._extract_resolution_patterns(),
-                'statistics': await self._generate_statistics(),
-                'processing_results': processing_results
+            # Required fields (higher weight)
+            required_checks = [
+                ('id', 0.1),
+                ('summary', 0.2),
+                ('description', 0.2),
+                ('category', 0.15)
+            ]
+            
+            for field, weight in required_checks:
+                max_score += weight
+                if incident.get(field) and str(incident[field]).strip():
+                    score += weight
+            
+            # Optional fields (lower weight)
+            optional_checks = [
+                ('severity', 0.1),
+                ('priority', 0.1),
+                ('date_submitted', 0.05),
+                ('reporter', 0.05),
+                ('resolution', 0.05)
+            ]
+            
+            for field, weight in optional_checks:
+                max_score += weight
+                if incident.get(field) and str(incident[field]).strip():
+                    score += weight
+            
+            # Content quality checks
+            summary_length = len(incident.get('summary', ''))
+            description_length = len(incident.get('description', ''))
+            
+            # Summary quality (good length range)
+            if 20 <= summary_length <= 200:
+                score += 0.05
+            max_score += 0.05
+            
+            # Description quality (good length range)
+            if 50 <= description_length <= 1000:
+                score += 0.05
+            max_score += 0.05
+            
+            return min(score / max_score, 1.0) if max_score > 0 else 0.0
+            
+        except Exception:
+            return 0.5  # Default score if calculation fails
+    
+    def _analyze_incident_complexity(self, incident: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze incident complexity"""
+        try:
+            complexity = {
+                'score': 0.0,
+                'factors': [],
+                'level': 'low'
             }
             
-            # Store knowledge base metadata
-            kb_metadata = {
-                'id': 'knowledge_base_v1',
-                'created_at': datetime.now().isoformat(),
-                'source_file': file_path,
-                'total_incidents': processing_results['processed_records'],
-                'knowledge_base': knowledge_base
+            text_content = incident.get('text_content', '')
+            
+            # Length-based complexity
+            if len(text_content) > 500:
+                complexity['score'] += 0.3
+                complexity['factors'].append('lengthy_description')
+            
+            # Technical terms detection
+            technical_terms = ['error', 'exception', 'timeout', 'connection', 'server', 'database', 'network']
+            tech_count = sum(1 for term in technical_terms if term.lower() in text_content.lower())
+            
+            if tech_count >= 3:
+                complexity['score'] += 0.4
+                complexity['factors'].append('multiple_technical_terms')
+            elif tech_count >= 1:
+                complexity['score'] += 0.2
+                complexity['factors'].append('technical_terms')
+            
+            # Priority/severity impact
+            severity = incident.get('severity', '').lower()
+            priority = incident.get('priority', '').lower()
+            
+            if 'high' in severity or 'critical' in severity:
+                complexity['score'] += 0.2
+                complexity['factors'].append('high_severity')
+            
+            if 'high' in priority or 'critical' in priority:
+                complexity['score'] += 0.1
+                complexity['factors'].append('high_priority')
+            
+            # Determine complexity level
+            if complexity['score'] >= 0.7:
+                complexity['level'] = 'high'
+            elif complexity['score'] >= 0.4:
+                complexity['level'] = 'medium'
+            else:
+                complexity['level'] = 'low'
+            
+            return complexity
+            
+        except Exception:
+            return {'score': 0.5, 'factors': [], 'level': 'medium'}
+    
+    def _extract_category_insights(self, incident: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract insights about the incident category"""
+        try:
+            category = incident.get('category', '').lower()
+            insights = {
+                'primary_system': 'unknown',
+                'service_type': 'unknown',
+                'typical_resolution_time': 'unknown'
             }
             
-            # Store in Cosmos DB
-            await self.azure_manager.store_incident(kb_metadata)
+            # System identification
+            if 'lms' in category or 'learning' in category:
+                insights['primary_system'] = 'Learning Management System'
+                insights['service_type'] = 'educational_platform'
+                insights['typical_resolution_time'] = '2-4 hours'
+            elif 'email' in category or 'exchange' in category:
+                insights['primary_system'] = 'Email System'
+                insights['service_type'] = 'communication'
+                insights['typical_resolution_time'] = '1-2 hours'
+            elif 'network' in category or 'connectivity' in category:
+                insights['primary_system'] = 'Network Infrastructure'
+                insights['service_type'] = 'infrastructure'
+                insights['typical_resolution_time'] = '1-6 hours'
+            elif 'database' in category or 'sql' in category:
+                insights['primary_system'] = 'Database System'
+                insights['service_type'] = 'data_management'
+                insights['typical_resolution_time'] = '2-8 hours'
             
-            return knowledge_base
+            return insights
+            
+        except Exception:
+            return {'primary_system': 'unknown', 'service_type': 'unknown', 'typical_resolution_time': 'unknown'}
+    
+    def _extract_urgency_indicators(self, incident: Dict[str, Any]) -> List[str]:
+        """Extract urgency indicators from incident text"""
+        try:
+            text_content = incident.get('text_content', '').lower()
+            urgency_patterns = [
+                r'\b(urgent|emergency|critical|asap|immediately)\b',
+                r'\b(down|outage|failure|broken|not working)\b',
+                r'\b(production|live|critical system)\b',
+                r'\b(all users|multiple users|everyone)\b',
+                r'\b(cannot|unable|failed to)\b'
+            ]
+            
+            indicators = []
+            for pattern in urgency_patterns:
+                matches = re.findall(pattern, text_content)
+                indicators.extend(matches)
+            
+            return list(set(indicators))  # Remove duplicates
+            
+        except Exception:
+            return []
+    
+    async def _save_to_json(self, data: List[Dict[str, Any]], output_path: str):
+        """Save processed data to JSON file"""
+        try:
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # Save with proper formatting
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+            
+            self.logger.info(f"Saved {len(data)} incidents to {output_path}")
             
         except Exception as e:
-            self.logger.error(f"Error generating knowledge base: {str(e)}")
+            self.logger.error(f"Error saving to JSON: {str(e)}")
             raise
     
-    async def _extract_categories(self) -> List[Dict[str, Any]]:
-        """Extract incident categories and their frequency"""
+    def _calculate_processing_statistics(self, total_input: int, total_output: int):
+        """Calculate final processing statistics"""
         try:
-            query = """
-            SELECT c.category, COUNT(1) as count 
-            FROM c 
-            WHERE c.data_source = 'excel_import'
-            GROUP BY c.category 
-            ORDER BY COUNT(1) DESC
-            """
+            success_rate = (self.processing_stats['processed_records'] / total_input) * 100 if total_input > 0 else 0
             
-            results = await self.azure_manager.query_incidents(query)
-            return results
+            # Calculate overall data quality score
+            quality_scores = []
+            # This would ideally be calculated from actual incident data
+            # For now, we'll estimate based on processing success
+            self.processing_stats['data_quality_score'] = min(success_rate / 100, 1.0)
+            
+            self.processing_stats.update({
+                'success_rate': success_rate,
+                'total_input_records': total_input,
+                'total_output_records': total_output,
+                'processing_timestamp': datetime.now().isoformat()
+            })
             
         except Exception as e:
-            self.logger.error(f"Error extracting categories: {str(e)}")
-            return []
+            self.logger.error(f"Error calculating statistics: {str(e)}")
     
-    async def _identify_common_issues(self) -> List[Dict[str, Any]]:
-        """Identify common issues based on summary patterns"""
-        try:
-            # Get all summaries
-            query = """
-            SELECT c.summary, c.category, COUNT(1) as frequency
-            FROM c 
-            WHERE c.data_source = 'excel_import'
-            GROUP BY c.summary, c.category
-            HAVING COUNT(1) > 1
-            ORDER BY COUNT(1) DESC
-            """
-            
-            results = await self.azure_manager.query_incidents(query)
-            return results[:20]  # Top 20 common issues
-            
-        except Exception as e:
-            self.logger.error(f"Error identifying common issues: {str(e)}")
-            return []
-    
-    async def _extract_resolution_patterns(self) -> List[Dict[str, Any]]:
-        """Extract successful resolution patterns"""
-        try:
-            query = """
-            SELECT c.category, c.resolution, COUNT(1) as frequency
-            FROM c 
-            WHERE c.data_source = 'excel_import'
-            AND LENGTH(c.resolution) > 10
-            GROUP BY c.category, c.resolution
-            ORDER BY COUNT(1) DESC
-            """
-            
-            results = await self.azure_manager.query_incidents(query)
-            return results[:15]  # Top 15 resolution patterns
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting resolution patterns: {str(e)}")
-            return []
-    
-    async def _generate_statistics(self) -> Dict[str, Any]:
-        """Generate overall statistics from the data"""
-        try:
-            stats = {}
-            
-            # Total incidents
-            total_query = "SELECT COUNT(1) as total FROM c WHERE c.data_source = 'excel_import'"
-            total_result = await self.azure_manager.query_incidents(total_query)
-            stats['total_incidents'] = total_result[0]['total'] if total_result else 0
-            
-            # Resolved incidents
-            resolved_query = """
-            SELECT COUNT(1) as resolved FROM c 
-            WHERE c.data_source = 'excel_import' 
-            AND LENGTH(c.resolution) > 0
-            """
-            resolved_result = await self.azure_manager.query_incidents(resolved_query)
-            stats['resolved_incidents'] = resolved_result[0]['resolved'] if resolved_result else 0
-            
-            # Resolution rate
-            if stats['total_incidents'] > 0:
-                stats['resolution_rate'] = (stats['resolved_incidents'] / stats['total_incidents']) * 100
-            else:
-                stats['resolution_rate'] = 0
-            
-            # Category distribution
-            category_query = """
-            SELECT c.category, COUNT(1) as count 
-            FROM c 
-            WHERE c.data_source = 'excel_import'
-            GROUP BY c.category
-            """
-            stats['category_distribution'] = await self.azure_manager.query_incidents(category_query)
-            
-            return stats
-            
-        except Exception as e:
-            self.logger.error(f"Error generating statistics: {str(e)}")
-            return {}
-    
-    def get_processing_stats(self) -> Dict[str, Any]:
+    def get_processing_statistics(self) -> Dict[str, Any]:
         """Get current processing statistics"""
-        return {
-            'stats': self.stats.copy(),
-            'timestamp': datetime.now().isoformat()
-        }
+        return self.processing_stats.copy()
+
+# Async utility functions for batch processing
+async def process_multiple_files(file_paths: List[str], output_dir: str) -> Dict[str, Any]:
+    """Process multiple Excel files in parallel"""
+    processor = DataIngestionProcessor()
+    await processor.initialize()
+    
+    results = []
+    for file_path in file_paths:
+        try:
+            output_path = os.path.join(output_dir, f"{Path(file_path).stem}_processed.json")
+            result = await processor.process_excel_file(file_path, output_path)
+            results.append({
+                'file': file_path,
+                'status': 'success',
+                'result': result
+            })
+        except Exception as e:
+            results.append({
+                'file': file_path,
+                'status': 'error',
+                'error': str(e)
+            })
+    
+    return {
+        'batch_results': results,
+        'total_files': len(file_paths),
+        'successful_files': len([r for r in results if r['status'] == 'success']),
+        'failed_files': len([r for r in results if r['status'] == 'error'])
+    }
+
+# Command-line interface for standalone usage
+async def main():
+    """Main function for CLI usage"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Process Excel incident data to JSON format')
+    parser.add_argument('input_file', help='Path to input Excel file')
+    parser.add_argument('--output', '-o', help='Output JSON file path')
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
+    
+    args = parser.parse_args()
+    
+    # Configure logging
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    try:
+        processor = DataIngestionProcessor()
+        await processor.initialize()
+        
+        output_path = args.output or f"{Path(args.input_file).stem}_processed.json"
+        result = await processor.process_excel_file(args.input_file, output_path)
+        
+        print(f"Processing completed successfully!")
+        print(f"Processed {result['statistics']['processed_records']} incidents")
+        print(f"Data quality score: {result['statistics']['data_quality_score']:.2f}")
+        print(f"Output saved to: {output_path}")
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return 1
+    
+    return 0
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(asyncio.run(main()))
