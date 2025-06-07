@@ -17,10 +17,11 @@ from typing import Dict, Any, Optional, List
 backend_path = os.path.join(os.path.dirname(__file__), '..', '..', 'agents')
 sys.path.append(backend_path)
 
-from reactive.conversation_agent import ConversationAgent
-from core.agent_registry import get_global_registry
-from core.agent_communication import MessageBus
-from shared.azure_clients import AzureClientManager
+from ...agents.reactive.conversation_agent import ConversationAgent
+from ...agents.core.agent_registry import get_global_registry
+from ...agents.core.agent_communication import MessageBus
+from ..shared.azure_clients import AzureClientManager
+from ..shared.function_utils import AgentInitializer, FunctionResponse, validate_request, add_request_metadata
 
 # Initialize global components
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)

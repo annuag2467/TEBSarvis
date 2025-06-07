@@ -11,7 +11,7 @@ import json
 import re
 
 from ..core.base_agent import BaseAgent, AgentCapability
-from ..shared.azure_clients import AzureClientManager
+from ...azure-functions.shared.azure_clients import AzureClientManager
 
 class ConversationAgent(BaseAgent):
     """
@@ -19,7 +19,7 @@ class ConversationAgent(BaseAgent):
     Provides contextual responses, intent recognition, and multi-turn conversations.
     """
     
-    def __init__(self, agent_id: str = "conversation_agent"):
+    def __init__(self, agent_id: str = "conversation_agent", agent_system=None):
         capabilities = [
             AgentCapability(
                 name="natural_language_qa",
@@ -50,9 +50,15 @@ class ConversationAgent(BaseAgent):
                 dependencies=["azure_openai", "search_agent"]
             )
         ]
-        
-        super().__init__(agent_id, "conversation", capabilities)
-        
+
+
+        config_manager = get_agent_config()
+        agent_config = config_manager.get_agent_config(AgentType.CONVERSATION)
+        capabilities = agent_config.get('capabilities', [])
+        super().__init__(agent_id, "conversation", capabilities, agent_system)
+        performance_config = config_manager.get_agent_performance_config(AgentType.CONVERSATION)
+        self.max_concurrent_tasks = performance_config.max_concurrent_tasks
+        self.task_timeout = performance_config.task_timeout
         self.azure_manager = AzureClientManager()
         self.conversation_sessions = {}  # session_id -> conversation_data
         self.session_timeout = 3600  # 1 hour
@@ -62,16 +68,29 @@ class ConversationAgent(BaseAgent):
         # Initialize agent
         asyncio.create_task(self._initialize())
     
+    
     async def _initialize(self):
-        """Initialize the conversation agent"""
-        try:
-            await self.azure_manager.initialize()
-            # Start session cleanup task
-            asyncio.create_task(self._cleanup_expired_sessions())
-            self.logger.info("Conversation Agent initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Conversation Agent: {str(e)}")
-            raise
+    """Initialize the agent with proper error handling"""
+    try:
+        # Initialize Azure manager
+        await self.azure_manager.initialize()
+        asyncio.create_task(self._cleanup_expired_sessions())
+        # Verify Azure services are accessible
+        health_status = await self.azure_manager.get_health_status()
+        
+        unhealthy_services = [
+            service for service, status in health_status.items() 
+            if status != 'healthy' and service != 'timestamp'
+        ]
+        
+        if unhealthy_services:
+            self.logger.warning(f"Some Azure services are unhealthy: {unhealthy_services}")
+        
+        self.logger.info(f"{self.agent_type.title()} Agent initialized successfully")
+        
+    except Exception as e:
+        self.logger.error(f"Failed to initialize {self.agent_type} Agent: {str(e)}")
+        raise
     
     def get_capabilities(self) -> List[AgentCapability]:
         """Return agent capabilities"""

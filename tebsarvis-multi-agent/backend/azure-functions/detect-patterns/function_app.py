@@ -17,10 +17,10 @@ from typing import Dict, Any, Optional, List
 backend_path = os.path.join(os.path.dirname(__file__), '..', '..', 'agents')
 sys.path.append(backend_path)
 
-from proactive.pattern_detection_agent import PatternDetectionAgent
-from core.agent_registry import get_global_registry
-from core.agent_communication import MessageBus
-from shared.azure_clients import AzureClientManager
+from ...agents.proactive.pattern_detection_agent import PatternDetectionAgent
+from ...agents.core.agent_registry import get_global_registry
+from ...agents.core.agent_communication import MessageBus
+from ..shared.azure_clients import AzureClientManager
 
 # Initialize global components
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)

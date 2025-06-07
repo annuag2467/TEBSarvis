@@ -74,7 +74,7 @@ class AlertingAgent(BaseAgent):
     Uses ML + Rules Engine for proactive alerting and escalation management.
     """
     
-    def __init__(self, agent_id: str = "alerting_agent"):
+    def __init__(self, agent_id: str = "alerting_agent", agent_system=None):
         capabilities = [
             AgentCapability(
                 name="real_time_monitoring",
@@ -112,8 +112,16 @@ class AlertingAgent(BaseAgent):
                 dependencies=["azure_functions"]
             )
         ]
+
+        config_manager = get_agent_config()
+        agent_config = config_manager.get_agent_config(AgentType.ALERTING)
+        capabilities = agent_config.get('capabilities', [])
         
-        super().__init__(agent_id, "alerting", capabilities)
+        super().__init__(agent_id, "alerting", capabilities, agent_system)
+    
+        performance_config = config_manager.get_agent_performance_config(AgentType.ALERTING)
+        self.max_concurrent_tasks = performance_config.max_concurrent_tasks
+        self.task_timeout = performance_config.task_timeout
         
         self.azure_manager = AzureClientManager()
         self.active_alerts: Dict[str, Alert] = {}
@@ -133,20 +141,33 @@ class AlertingAgent(BaseAgent):
         # Initialize agent
         asyncio.create_task(self._initialize())
     
+    
     async def _initialize(self):
-        """Initialize the alerting agent"""
-        try:
-            await self.azure_manager.initialize()
-            
-            # Start monitoring tasks
-            asyncio.create_task(self._real_time_monitor())
-            asyncio.create_task(self._escalation_manager())
-            asyncio.create_task(self._alert_cleanup())
-            
-            self.logger.info("Alerting Agent initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Alerting Agent: {str(e)}")
-            raise
+    """Initialize the agent with proper error handling"""
+    try:
+        # Initialize Azure manager
+        await self.azure_manager.initialize()
+        # Start monitoring tasks
+        asyncio.create_task(self._real_time_monitor())
+        asyncio.create_task(self._escalation_manager())
+        asyncio.create_task(self._alert_cleanup())
+        
+        # Verify Azure services are accessible
+        health_status = await self.azure_manager.get_health_status()
+        
+        unhealthy_services = [
+            service for service, status in health_status.items() 
+            if status != 'healthy' and service != 'timestamp'
+        ]
+        
+        if unhealthy_services:
+            self.logger.warning(f"Some Azure services are unhealthy: {unhealthy_services}")
+        
+        self.logger.info(f"{self.agent_type.title()} Agent initialized successfully")
+        
+    except Exception as e:
+        self.logger.error(f"Failed to initialize {self.agent_type} Agent: {str(e)}")
+        raise
     
     def get_capabilities(self) -> List[AgentCapability]:
         """Return agent capabilities"""

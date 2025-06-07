@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict, deque
 import weakref
 from dataclasses import asdict
+from .base_agent import AgentStatus
 
 from .message_types import (
     BaseMessage, MessageType, TaskRequestMessage, TaskResponseMessage,
@@ -43,6 +44,7 @@ class MessageBus:
     async def start(self):
         """Start the message bus"""
         self.running = True
+        self.stats['start_time'] = datetime.now()
         self.logger.info("Message bus started")
     
     async def stop(self):

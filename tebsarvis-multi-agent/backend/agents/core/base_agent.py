@@ -11,6 +11,8 @@ import asyncio
 import logging
 import uuid
 from enum import Enum
+from .message_types import Priority  # Replace MessagePriority
+from .agent_communication import MessageBus, AgentCommunicator
 
 class AgentStatus(Enum):
     IDLE = "idle"
@@ -48,7 +50,8 @@ class BaseAgent(ABC):
     Provides common functionality for communication, logging, and task management.
     """
     
-    def __init__(self, agent_id: str, agent_type: str, capabilities: List[AgentCapability]):
+    def __init__(self, agent_id: str, agent_type: str, capabilities: List[AgentCapability], 
+                 message_bus: MessageBus = None):
         self.agent_id = agent_id
         self.agent_type = agent_type
         self.capabilities = capabilities
@@ -59,7 +62,11 @@ class BaseAgent(ABC):
         self.active_tasks = {}
         self.collaborating_agents = set()
         
-        # Initialize agent
+        # ADD: Communication integration
+        self.message_bus = None
+        self.communicator = None
+        self.agent_system = agent_system
+        
         self.logger.info(f"Agent {self.agent_id} of type {self.agent_type} initialized")
     
     @abstractmethod
@@ -85,16 +92,29 @@ class BaseAgent(ABC):
         pass
     
     async def start(self):
-        """Start the agent and begin processing messages"""
+        """Start the agent and register with system"""
         self.status = AgentStatus.IDLE
+        
+        # Register with agent system if available
+        if self.agent_system:
+            success = await self.agent_system.register_agent(self)
+            if not success:
+                self.logger.error(f"Failed to register agent {self.agent_id} with system")
+                return
+        
         self.logger.info(f"Agent {self.agent_id} started")
         
         # Start message processing loop
         asyncio.create_task(self._message_processing_loop())
-    
+
     async def stop(self):
         """Stop the agent gracefully"""
         self.status = AgentStatus.OFFLINE
+        
+        # Deregister from agent system
+        if self.agent_system:
+            await self.agent_system.deregister_agent(self.agent_id)
+        
         self.logger.info(f"Agent {self.agent_id} stopped")
     
     async def _message_processing_loop(self):
@@ -204,12 +224,7 @@ class BaseAgent(ABC):
         
         if 'callback' in message:
             await self._send_response(message['callback'], status_info, 'status_check')
-    
-    async def _send_response(self, callback: str, data: Dict[str, Any], task_id: str):
-        """Send response back to requester"""
-        # This would typically send to a message bus or callback URL
-        # For now, just log the response
-        self.logger.debug(f"Sending response for task {task_id} to {callback}")
+
     
     def _update_metrics(self, processing_time: float, success: bool):
         """Update agent performance metrics"""
@@ -235,8 +250,42 @@ class BaseAgent(ABC):
     
     async def send_message_to_agent(self, target_agent_id: str, message: Dict[str, Any]):
         """Send message to another agent"""
-        # This would typically use the agent communication system
-        self.logger.debug(f"Sending message to agent {target_agent_id}")
+        if not self.communicator:
+            self.logger.error("No communicator available - agent not registered with system")
+            return False
+        
+        try:
+            if message.get('type') == 'collaboration':
+                success = await self.communicator.send_collaboration_request(
+                    target_agent_id,
+                    message.get('collaboration_type', ''),
+                    message.get('data', {})
+                )
+                return success
+            else:
+                self.logger.debug(f"Sending message to agent {target_agent_id}")
+                return True
+        except Exception as e:
+            self.logger.error(f"Failed to send message to {target_agent_id}: {str(e)}")
+            return False
+
+    async def _send_response(self, callback: str, data: Dict[str, Any], task_id: str):
+        """Send response back to requester"""
+        if not self.communicator:
+            self.logger.error("No communicator available for response")
+            return
+        
+        try:
+            recipient_id = callback.split(':')[0] if ':' in callback else callback
+            
+            await self.communicator.send_response(
+                original_message_id=task_id,
+                recipient_id=recipient_id,
+                success=True,
+                result_data=data
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to send response: {str(e)}")
     
     async def request_collaboration(self, target_agent_id: str, collaboration_type: str, data: Dict[str, Any]):
         """Request collaboration with another agent"""

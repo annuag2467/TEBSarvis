@@ -17,6 +17,7 @@ from ..core.base_agent import BaseAgent, AgentCapability
 from ..core.agent_registry import AgentRegistry
 from ..core.agent_communication import MessageBus, AgentCommunicator
 from ..core.message_types import TaskType, Priority
+from ...config.agent_config import get_agent_config
 
 class WorkflowState(Enum):
     DRAFT = "draft"
@@ -481,14 +482,12 @@ class WorkflowEngine:
         self.message_bus = message_bus
         self.communicator = AgentCommunicator("workflow_engine", message_bus)
         
-        # Workflow storage
-        self.workflow_definitions: Dict[str, WorkflowDefinition] = {}
-        self.active_executions: Dict[str, WorkflowExecution] = {}
-        self.execution_history: List[WorkflowExecution] = []
+        config_manager = get_agent_config()
+        workflow_config = config_manager.workflow_config
         
-        # Engine configuration
-        self.max_concurrent_executions = 50
-        self.execution_cleanup_hours = 24
+        self.max_concurrent_executions = workflow_config['max_concurrent_executions']
+        self.execution_cleanup_hours = workflow_config['execution_cleanup_hours']
+        self.default_step_timeout = workflow_config['default_step_timeout']
         
         self.logger = logging.getLogger("workflow_engine")
         self.running = False

@@ -648,3 +648,87 @@ class AzureClientManager:
             status['search'] = f'error: {str(e)}'
         
         return status
+
+
+    async def search_with_filters(self, query_text: str, filters: Dict[str, Any], 
+                                top_k: int = 10) -> List[Dict[str, Any]]:
+        """Search with additional filters"""
+        filter_string = self._build_odata_filters(filters)
+        return await self.search_client.text_search(query_text, top_k, filter_string)
+    
+    def _build_odata_filters(self, filters: Dict[str, Any]) -> Optional[str]:
+        """Build OData filter string from dictionary"""
+        if not filters:
+            return None
+        
+        filter_parts = []
+        if filters.get('category'):
+            filter_parts.append(f"metadata/category eq '{filters['category']}'")
+        if filters.get('severity'):
+            filter_parts.append(f"metadata/severity eq '{filters['severity']}'")
+        if filters.get('date_range'):
+            date_range = filters['date_range']
+            if date_range.get('start'):
+                filter_parts.append(f"metadata/date_submitted ge '{date_range['start']}'")
+            if date_range.get('end'):
+                filter_parts.append(f"metadata/date_submitted le '{date_range['end']}'")
+        
+        return " and ".join(filter_parts) if filter_parts else None
+    
+    async def get_incident_metrics(self, time_range: Dict[str, Any]) -> Dict[str, Any]:
+        """Get incident metrics for the specified time range"""
+        try:
+            # Calculate date range
+            from datetime import datetime, timedelta
+            end_date = datetime.now()
+            if 'days' in time_range:
+                start_date = end_date - timedelta(days=time_range['days'])
+            else:
+                start_date = end_date - timedelta(days=30)
+            
+            # Query for metrics
+            query = """
+            SELECT 
+                COUNT(1) as total_count,
+                c.category,
+                c.severity,
+                c.priority
+            FROM c 
+            WHERE c.date_submitted >= @start_date 
+            AND c.date_submitted <= @end_date
+            GROUP BY c.category, c.severity, c.priority
+            """
+            
+            parameters = [
+                {"name": "@start_date", "value": start_date.strftime('%d-%m-%Y')},
+                {"name": "@end_date", "value": end_date.strftime('%d-%m-%Y')}
+            ]
+            
+            results = await self.query_incidents(query, parameters)
+            
+            # Process results into metrics
+            metrics = {
+                'total_incidents': sum(r.get('total_count', 0) for r in results),
+                'category_breakdown': {},
+                'severity_breakdown': {},
+                'time_range': time_range
+            }
+            
+            for result in results:
+                category = result.get('category', 'Unknown')
+                severity = result.get('severity', 'Unknown')
+                count = result.get('total_count', 0)
+                
+                if category not in metrics['category_breakdown']:
+                    metrics['category_breakdown'][category] = 0
+                metrics['category_breakdown'][category] += count
+                
+                if severity not in metrics['severity_breakdown']:
+                    metrics['severity_breakdown'][severity] = 0
+                metrics['severity_breakdown'][severity] += count
+            
+            return metrics
+            
+        except Exception as e:
+            self.logger.error(f"Error getting incident metrics: {str(e)}")
+            return {'total_incidents': 0, 'category_breakdown': {}, 'severity_breakdown': {}}

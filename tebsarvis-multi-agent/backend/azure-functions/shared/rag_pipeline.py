@@ -9,10 +9,10 @@ from typing import Dict, Any, List, Optional, Tuple, Union
 from datetime import datetime
 import json
 import re
+from .azure_clients import AzureClientManager
 from dataclasses import dataclass, asdict
 from enum import Enum
 
-from azure_clients import AzureClientManager
 
 class RetrievalStrategy(Enum):
     """Different retrieval strategies for the RAG pipeline"""

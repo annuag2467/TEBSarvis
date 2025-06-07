@@ -17,6 +17,7 @@ from ..core.base_agent import BaseAgent, AgentCapability
 from ..core.agent_registry import AgentRegistry
 from ..core.agent_communication import MessageBus, AgentCommunicator
 from ..core.message_types import create_collaboration_request, Priority
+from ...config.agent_config import get_agent_config
 
 class CollaborationType(Enum):
     CONSENSUS_BUILDING = "consensus_building"
@@ -111,9 +112,11 @@ class CollaborationManager:
         self._load_collaboration_patterns()
         
         # Configuration
-        self.max_concurrent_sessions = 20
-        self.default_timeout_minutes = 30
-        self.context_cleanup_hours = 24
+        config_manager = get_agent_config()
+        collaboration_config = config_manager.collaboration_config
+        self.max_concurrent_sessions = collaboration_config['max_concurrent_sessions']
+        self.default_timeout_minutes = collaboration_config['default_timeout_minutes']
+        self.context_cleanup_hours = collaboration_config['context_cleanup_hours']
         
         # Statistics
         self.stats = {

@@ -17,6 +17,8 @@ from ..core.base_agent import BaseAgent, AgentCapability
 from ..core.agent_registry import AgentRegistry, AgentRegistration
 from ..core.agent_communication import MessageBus, AgentCommunicator
 from ..core.message_types import TaskType, Priority, TaskRequestMessage
+from ...config.agent_config import get_agent_config
+
 
 class LoadBalancingStrategy(Enum):
     ROUND_ROBIN = "round_robin"
@@ -86,11 +88,18 @@ class TaskDispatcher:
         # Load balancing state
         self.round_robin_counters: Dict[str, int] = defaultdict(int)
         self.weighted_counters: Dict[str, int] = defaultdict(int)
+
+
+        config_manager = get_agent_config()
+        orchestration_config = config_manager.orchestration_config
+        load_balancing_config = orchestration_config['load_balancing']
+        self.load_balancing_strategy = LoadBalancingStrategy(
+            load_balancing_config.get('strategy', 'least_loaded').upper()
+        )
         
-        # Configuration
-        self.load_balancing_strategy = LoadBalancingStrategy.LEAST_LOADED
-        self.max_queue_size = 1000
-        self.metrics_update_interval = 30  # seconds
+        
+        self.max_queue_size = 1000  # Could be moved to config
+        self.metrics_update_interval = load_balancing_config.get('health_check_interval', 30)
         self.performance_history_limit = 100
         
         # Statistics

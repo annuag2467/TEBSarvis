@@ -17,6 +17,7 @@ from ..core.agent_communication import MessageBus, AgentCommunicator, MessageRou
 from ..core.message_types import (
     TaskType, Priority, create_task_request, create_collaboration_request
 )
+from ...config.agent_config import get_agent_config
 
 class WorkflowStatus(Enum):
     PENDING = "pending"
@@ -71,11 +72,13 @@ class AgentCoordinator:
     """
     
     def __init__(self, registry: Optional[AgentRegistry] = None, 
-                 message_bus: Optional[MessageBus] = None):
+                 message_bus: Optional[MessageBus] = None,
+                 task_dispatcher: Optional[TaskDispatcher] = None):
         self.registry = registry or get_global_registry()
         self.message_bus = message_bus or MessageBus()
         self.message_router = MessageRouter(self.message_bus)
         self.communicator = AgentCommunicator("coordinator", self.message_bus)
+        self.task_dispatcher = task_dispatcher
         
         self.active_workflows: Dict[str, Workflow] = {}
         self.workflow_history: List[Workflow] = []
@@ -86,9 +89,18 @@ class AgentCoordinator:
             CoordinationStrategy.PRIORITY_BASED: self._execute_priority_based
         }
         
+        config_manager = get_agent_config()
+        orchestration_config = config_manager.orchestration_config
+        self.max_concurrent_workflows = orchestration_config['max_concurrent_workflows']
+        self.default_timeout = orchestration_config['default_timeout_minutes'] * 60
+
+        coordination_strategies = orchestration_config['coordination_strategies']
+        self.strategy_timeouts = {
+            'sequential': coordination_strategies['sequential']['default_timeout'],
+            'parallel': coordination_strategies['parallel']['max_parallel_tasks']
+        }
+        
         self.logger = logging.getLogger("agent_coordinator")
-        self.max_concurrent_workflows = 10
-        self.default_timeout = 300  # 5 minutes
         
         # Performance metrics
         self.metrics = {
@@ -579,23 +591,41 @@ class AgentCoordinator:
                 completed_tasks.add(task.task_id)
     
     async def _execute_task(self, task: WorkflowTask, workflow: Workflow) -> bool:
-        """Execute a single task"""
+        """Execute a single task using task dispatcher for optimal routing"""
         try:
             task.status = WorkflowStatus.RUNNING
             task.started_at = datetime.now()
             
-            # Find best agent for the task
-            best_agent = self.registry.get_best_agent_for_capability(task.task_type.value)
-            if not best_agent:
+            # INTELLIGENT AGENT SELECTION: Use task dispatcher if available
+            if self.task_dispatcher:
+                # Use task dispatcher for intelligent agent selection
+                agent_id = await self.task_dispatcher.get_optimal_agent(
+                    task.task_type, task.priority
+                )
+                
+                if agent_id:
+                    task.assigned_agent = agent_id
+                else:
+                    # Fallback to registry-based selection
+                    best_agent = self.registry.get_best_agent_for_capability(task.task_type.value)
+                    agent_id = best_agent.agent_id if best_agent else None
+                    if agent_id:
+                        task.assigned_agent = agent_id
+            else:
+                # Fallback to registry-based selection
+                best_agent = self.registry.get_best_agent_for_capability(task.task_type.value)
+                agent_id = best_agent.agent_id if best_agent else None
+                if agent_id:
+                    task.assigned_agent = agent_id
+            
+            if not agent_id:
                 task.status = WorkflowStatus.FAILED
                 task.error = f"No available agent for task type: {task.task_type.value}"
                 return False
             
-            task.assigned_agent = best_agent.agent_id
-            
             # Send task to agent
             response = await self.communicator.send_task_request(
-                recipient_id=best_agent.agent_id,
+                recipient_id=agent_id,
                 task_type=task.task_type.value,
                 task_data=task.task_data,
                 timeout_seconds=task.timeout_seconds

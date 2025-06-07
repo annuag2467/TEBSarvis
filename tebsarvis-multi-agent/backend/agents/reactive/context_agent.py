@@ -12,7 +12,7 @@ import re
 from collections import Counter
 
 from ..core.base_agent import BaseAgent, AgentCapability
-from ..shared.azure_clients import AzureClientManager
+from ...azure-functions.shared.azure_clients import AzureClientManager
 
 class ContextAgent(BaseAgent):
     """
@@ -20,7 +20,7 @@ class ContextAgent(BaseAgent):
     Provides context analysis, metadata extraction, and environmental factor integration.
     """
     
-    def __init__(self, agent_id: str = "context_agent"):
+    def __init__(self, agent_id: str = "context_agent", agent_system=None):
         capabilities = [
             AgentCapability(
                 name="metadata_enrichment",
@@ -52,8 +52,14 @@ class ContextAgent(BaseAgent):
             )
         ]
         
-        super().__init__(agent_id, "context", capabilities)
-        
+
+        config_manager = get_agent_config()
+        agent_config = config_manager.get_agent_config(AgentType.CONTEXT)
+        capabilities = agent_config.get('capabilities', [])
+        super().__init__(agent_id, "context", capabilities, agent_system)
+        performance_config = config_manager.get_agent_performance_config(AgentType.CONTEXT)
+        self.max_concurrent_tasks = performance_config.max_concurrent_tasks
+        self.task_timeout = performance_config.task_timeout
         self.azure_manager = AzureClientManager()
         self.entity_patterns = self._load_entity_patterns()
         self.context_cache = {}  # Cache for environmental context
@@ -63,13 +69,27 @@ class ContextAgent(BaseAgent):
         asyncio.create_task(self._initialize())
     
     async def _initialize(self):
-        """Initialize the context agent"""
-        try:
-            await self.azure_manager.initialize()
-            self.logger.info("Context Agent initialized successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to initialize Context Agent: {str(e)}")
-            raise
+    """Initialize the agent with proper error handling"""
+    try:
+        # Initialize Azure manager
+        await self.azure_manager.initialize()
+        
+        # Verify Azure services are accessible
+        health_status = await self.azure_manager.get_health_status()
+        
+        unhealthy_services = [
+            service for service, status in health_status.items() 
+            if status != 'healthy' and service != 'timestamp'
+        ]
+        
+        if unhealthy_services:
+            self.logger.warning(f"Some Azure services are unhealthy: {unhealthy_services}")
+        
+        self.logger.info(f"{self.agent_type.title()} Agent initialized successfully")
+        
+    except Exception as e:
+        self.logger.error(f"Failed to initialize {self.agent_type} Agent: {str(e)}")
+        raise
     
     def get_capabilities(self) -> List[AgentCapability]:
         """Return agent capabilities"""

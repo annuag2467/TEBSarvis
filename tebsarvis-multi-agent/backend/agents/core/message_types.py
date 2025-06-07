@@ -32,12 +32,14 @@ class TaskType(Enum):
     ALERT_GENERATION = "alert_generation"
     DATA_PROCESSING = "data_processing"
 
+
 class Priority(Enum):
-    """Message priority levels"""
+    """Message priority levels - MASTER ENUM"""
     LOW = 1
     NORMAL = 2
     HIGH = 3
     CRITICAL = 4
+    EMERGENCY = 5  # Add to support agent_config needs
 
 @dataclass
 class BaseMessage:
