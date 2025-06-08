@@ -1,116 +1,236 @@
-# TEBSarvis
-```plaintext
-tebsarvis-multi-agent/
-├── backend/
-│   ├── agents/                                # All AI agents organized by type
-│   │   ├── core/                              # Foundational agent components
-│   │   │   ├── base_agent.py                  # Abstract base class for agents
-│   │   │   ├── agent_communication.py         # Messaging protocols (inter-agent)
-│   │   │   ├── message_types.py               # Message formats and enums
-│   │   │   └── agent_registry.py              # Dynamic agent discovery/registration
-│   │   ├── reactive/                          # Agents that respond to requests
-│   │   │   ├── resolution_agent.py            # RAG + GPT-4 based resolution generator
-│   │   │   ├── search_agent.py                # Vector & semantic similarity search
-│   │   │   ├── conversation_agent.py          # Chat-based agent using LLM
-│   │   │   └── context_agent.py               # Adds metadata/context for LLMs
-│   │   ├── proactive/                         # Autonomous, monitoring-focused agents
-│   │   │   ├── pattern_detection_agent.py     # Clustering/anomaly detection
-│   │   │   └── alerting_agent.py              # Rule-based proactive alerts
-│   │   └── orchestrator/                      # Coordinates multi-agent workflows
-│   │       ├── agent_coordinator.py           # Main task router / controller
-│   │       ├── task_dispatcher.py             # Load-balanced task dispatch
-│   │       ├── workflow_engine.py             # Composable workflow executor
-│   │       └── collaboration_manager.py       # Agent-to-agent collaboration protocols
-│   ├── azure-functions/                       # Serverless Azure Function APIs
-│   │   ├── agent-orchestrator/
-│   │   │   ├── function_app.py                # Central orchestration entrypoint
-│   │   │   └── host.json
-│   │   ├── recommend-resolution/
-│   │   │   ├── function_app.py                # ResolutionAgent API wrapper
-│   │   │   └── host.json
-│   │   ├── search-similar-incidents/
-│   │   │   ├── function_app.py                # SearchAgent API wrapper
-│   │   │   └── host.json
-│   │   ├── ask-assistant/
-│   │   │   ├── function_app.py                # ConversationAgent API wrapper
-│   │   │   └── host.json
-│   │   ├── detect-patterns/
-│   │   │   ├── function_app.py                # PatternDetectionAgent API
-│   │   │   └── host.json
-│   │   ├── proactive-alerts/
-│   │   │   ├── function_app.py                # AlertingAgent API endpoint
-│   │   │   └── host.json
-│   │   └── shared/
-│   │       ├── azure_clients.py               # Azure service connectors (Cognitive, Search)
-│   │       ├── rag_pipeline.py                # RAG logic integration
-│   │       └── agent_utils.py                 # Utilities for all functions
-│   ├── workflows/                             # Multi-agent workflow compositions
-│   │   ├── incident_resolution_workflow.py    # Full resolution pipeline
-│   │   ├── proactive_monitoring_workflow.py   # Auto alert/pattern detection
-│   │   └── conversation_workflow.py           # Chat + search + resolve chain
-│   ├── data-processing/
-│   │   ├── data_ingestion.py                  # Converts Excel to structured JSON
-│   │   ├── vector_embeddings.py               # Embedding generator (e.g. OpenAI/BGE)
-│   │   └── knowledge_base_builder.py          # Index builder (FAISS / Azure AI Search)
-│   └── config/
-│       ├── agent_config.py                    # Agent-specific parameters
-│       └── azure_config.py                    # Azure service credentials/settings
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── AgentDashboard.vue             # Overview dashboard of all agents
-│   │   │   ├── ChatInterface.vue              # UI for talking to Conversation Agent
-│   │   │   ├── IncidentForm.vue               # Incident submission form
-│   │   │   ├── PatternInsights.vue            # UI for detected patterns
-│   │   │   ├── AlertsPanel.vue                # Shows triggered alerts
-│   │   │   └── AgentCollaboration.vue         # Visualizes agent interaction graph
-│   │   ├── services/
-│   │   │   ├── agent_api.js                   # Agent API interface
-│   │   │   ├── websocket.js                   # Live updates from agents
-│   │   │   └── workflow_client.js             # Workflow execution handler
-│   │   ├── store/
-│   │   │   ├── agents.js                      # Vuex store: agents
-│   │   │   ├── workflows.js                   # Vuex store: workflows
-│   │   │   └── incidents.js                   # Vuex store: incident tracking
-│   │   └── App.vue                            # Main app entry
-│   └── package.json                           # Vue app config
-├── data/
-│   ├── raw/
-│   │   └── CaseDataWithResolution.xlsx        # Original incident records
-│   ├── processed/
-│   │   ├── incidents.json                     # Cleaned incident data
-│   │   ├── embeddings.json                    # Precomputed vector embeddings
-│   │   └── knowledge_base.json                # Structured KB for search
-│   └── agent-training/
-│       ├── resolution_patterns.json           # Prompt engineering data
-│       ├── conversation_examples.json         # LLM chat finetuning examples
-│       └── pattern_samples.json               # Samples for pattern detection
-├── scripts/
-│   ├── setup_agents.py                        # Registers all agents
-│   ├── deploy_multi_agent.sh                  # Deploy script (CLI/Azure)
-│   ├── test_agent_communication.py            # Simulates agent chat/test
-│   └── monitor_agents.py                      # Health checks and logs
-├── tests/
-│   ├── unit/
-│   │   ├── test_agents/
-│   │   │   ├── test_resolution_agent.py
-│   │   │   ├── test_search_agent.py
-│   │   │   ├── test_conversation_agent.py
-│   │   │   ├── test_context_agent.py
-│   │   │   ├── test_pattern_agent.py
-│   │   │   └── test_alerting_agent.py
-│   │   └── test_orchestrator/
-│   │       ├── test_coordinator.py
-│   │       └── test_workflows.py
-│   └── integration/
-│       ├── test_multi_agent_workflows.py
-│       └── test_agent_collaboration.py
-├── docs/
-│   ├── agent_specifications.md                # Role and flow of each agent
-│   ├── workflow_documentation.md             # Step-by-step workflow details
-│   ├── api_documentation.md                  # Azure Function endpoints
-│   └── deployment_guide.md                   # Guide to deploy all modules
-├── .env.example                               # Sample env file
-├── requirements.txt                           # Python deps
-└── README.md                                  # Project overview (You're here!)
+# TEBSarvis - Multi-Agent Incident Resolution System
+
+TEBSarvis is an advanced multi-agent system designed for intelligent incident resolution and proactive system monitoring. It combines multiple specialized AI agents working in coordination to provide automated incident resolution, pattern detection, and interactive assistance.
+
+## 🌟 Key Features
+
+- **Multi-Agent Architecture**: Coordinated AI agents for different specialized tasks
+- **Reactive & Proactive Capabilities**: Both response-based and predictive monitoring
+- **Advanced RAG Pipeline**: Utilizes GPT-4 with enterprise knowledge base integration
+- **Real-time Pattern Detection**: Automated anomaly and pattern recognition
+- **Interactive Chat Interface**: Natural language interaction with the system
+- **Azure Cloud Integration**: Scalable serverless architecture using Azure Functions
+
+## 🏗️ System Architecture
+
+The system is built on a modular architecture with several key components:
+
+### 1. Core Agent System
+
+- Base agent framework
+- Inter-agent communication protocols
+- Message bus and registry system
+- Dynamic agent discovery and registration
+
+### 2. Agent Types
+
+- **Reactive Agents**:
+  - Resolution Agent: RAG + GPT-4 based solution generation
+  - Search Agent: Vector & semantic similarity search
+  - Conversation Agent: Natural language interaction
+  - Context Agent: Metadata and context enhancement
+
+- **Proactive Agents**:
+  - Pattern Detection Agent: Automated anomaly detection
+  - Alerting Agent: Rule-based proactive monitoring
+
+- **Orchestration Layer**:
+  - Agent Coordinator: Central task routing
+  - Task Dispatcher: Load-balanced distribution
+  - Workflow Engine: Composable process execution
+  - Collaboration Manager: Inter-agent communication
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Python 3.11 or higher
+- Node.js 18+ (for frontend)
+- Azure subscription (for cloud deployment)
+- OpenAI API key
+
+### Installation
+
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/yourusername/TEBSarvis.git
+   cd TEBSarvis
+   ```
+
+2. Set up Python virtual environment:
+
+   ```bash
+   python -m venv venv
+   .\venv\Scripts\activate  # Windows
+   source venv/bin/activate # Linux/Mac
+   ```
+
+3. Install backend dependencies:
+
+   ```bash
+   cd tebsarvis-multi-agent
+   pip install -r requirements.txt
+   ```
+
+4. Install frontend dependencies:
+
+   ```bash
+   cd frontend
+   npm install
+   ```
+
+5. Configure environment variables:
+
+   Create a `.env` file in the root directory with:
+
+   ```env
+   OPENAI_API_KEY=your_api_key
+   AZURE_TENANT_ID=your_tenant_id
+   AZURE_SUBSCRIPTION_ID=your_subscription_id
+   ```
+
+## 🔌 API Endpoints
+
+### Agent Orchestrator
+
+- `POST /api/orchestrator/process-incident`
+  - Process new incidents through the multi-agent system
+  - Body: `{ "description": "string", "severity": "number", "category": "string" }`
+
+### Resolution Agent
+
+- `POST /api/recommend-resolution`
+  - Get AI-powered resolution recommendations
+  - Body: `{ "incident_id": "string", "context": "object" }`
+
+### Search Agent
+
+- `GET /api/search-similar-incidents`
+  - Find similar historical incidents
+  - Query params: `q` (search query), `limit` (max results)
+
+### Conversation Agent
+
+- `POST /api/ask-assistant`
+  - Interactive chat with the AI assistant
+  - Body: `{ "message": "string", "conversation_id": "string" }`
+
+### Pattern Detection
+
+- `GET /api/detect-patterns`
+  - Retrieve detected patterns and anomalies
+  - Query params: `timeframe` (analysis window)
+
+### Proactive Alerts
+
+- `GET /api/proactive-alerts`
+  - Get current system alerts
+  - Query params: `severity` (alert level)
+
+## ▶️ Running the System
+
+1. Start the backend services:
+
+   ```bash
+   python scripts/setup_agents.py
+   ```
+
+2. Deploy Azure Functions:
+
+   ```bash
+   ./scripts/deploy_multi_agent.sh
+   ```
+
+3. Start the frontend development server:
+
+   ```bash
+   cd frontend
+   npm run serve
+   ```
+
+## 🔄 Workflows
+
+The system supports three main workflows:
+
+1. **Incident Resolution Workflow**
+   - Automated incident analysis and resolution
+   - Knowledge base enrichment
+   - Similar case matching
+
+2. **Proactive Monitoring Workflow**
+   - Continuous system monitoring
+   - Pattern detection and analysis
+   - Automated alert generation
+
+3. **Conversation Workflow**
+   - Interactive problem solving
+   - Context-aware responses
+   - Knowledge base integration
+
+## 🧪 Testing
+
+Run the test suite:
+
+```bash
+cd tests
+python -m pytest
 ```
+
+Run integration tests:
+
+```bash
+python -m pytest tests/integration/
+```
+
+## 📚 Documentation
+
+For detailed documentation, please refer to:
+
+- [Agent Specifications](docs/agent_specifications.md)
+- [API Documentation](docs/api_documentation.md)
+- [Deployment Guide](docs/deployment_guide.md)
+- [Workflow Documentation](docs/workflow_documentation.md)
+
+## 🛠️ Tech Stack
+
+- **Backend**:
+  - Python 3.11+
+  - Azure Functions
+  - OpenAI GPT-4
+  - FAISS Vector Database
+  
+- **Frontend**:
+  - Vue.js 3
+  - Vuex State Management
+  - Tailwind CSS
+  
+- **Cloud Services**:
+  - Azure AI Search
+  - Azure Cosmos DB
+  - Azure Service Bus
+  - Azure Monitor
+
+## 📈 Performance Monitoring
+
+Monitor system health and performance:
+
+```bash
+python scripts/monitor_agents.py
+```
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+For more information about the architecture and components, please refer to the [tebsarvis_architecture.pdf](tebsarvis_architecture.pdf) document.

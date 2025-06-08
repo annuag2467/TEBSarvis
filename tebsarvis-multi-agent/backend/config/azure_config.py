@@ -9,14 +9,13 @@ from dataclasses import dataclass
 import logging
 
 @dataclass
-class AzureOpenAIConfig:
+class OpenAIConfig:
     """Configuration for Azure OpenAI services"""
     endpoint: str
     api_key: str
-    api_version: str
-    chat_model: str
-    embedding_model: str
-    deployment_name: str
+    api_version: str = "2024-02-01"
+    chat_model: str = "gpt-4"
+    embedding_model: str = "text-embedding-ada-002"
     max_tokens: int = 4000
     temperature: float = 0.7
     timeout: int = 30
@@ -80,6 +79,7 @@ class AzureConfigManager:
         required_vars = [
             'AZURE_OPENAI_ENDPOINT',
             'AZURE_OPENAI_KEY',
+            'AZURE_OPENAI_API_VERSION',
             'COSMOS_DB_URL',
             'COSMOS_DB_KEY',
             'SEARCH_SERVICE_ENDPOINT',
@@ -96,15 +96,14 @@ class AzureConfigManager:
         
         self.logger.info("Environment validation completed successfully")
     
-    def _load_openai_config(self) -> AzureOpenAIConfig:
+    def _load_openai_config(self) -> OpenAIConfig:
         """Load Azure OpenAI configuration"""
-        return AzureOpenAIConfig(
+        return OpenAIConfig(
             endpoint=os.getenv('AZURE_OPENAI_ENDPOINT'),
             api_key=os.getenv('AZURE_OPENAI_KEY'),
             api_version=os.getenv('AZURE_OPENAI_API_VERSION', '2024-02-01'),
             chat_model=os.getenv('AZURE_OPENAI_CHAT_MODEL', 'gpt-4'),
             embedding_model=os.getenv('AZURE_OPENAI_EMBEDDING_MODEL', 'text-embedding-ada-002'),
-            deployment_name=os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME', 'gpt-4-deployment'),
             max_tokens=int(os.getenv('AZURE_OPENAI_MAX_TOKENS', '4000')),
             temperature=float(os.getenv('AZURE_OPENAI_TEMPERATURE', '0.7')),
             timeout=int(os.getenv('AZURE_OPENAI_TIMEOUT', '30'))
@@ -206,9 +205,9 @@ class AzureConfigManager:
         return validation_results
     
     def _validate_openai(self) -> bool:
-        """Validate OpenAI configuration"""
+        """Validate Azure OpenAI configuration"""
         try:
-            required_fields = ['endpoint', 'api_key', 'chat_model', 'embedding_model']
+            required_fields = ['endpoint', 'api_key', 'api_version', 'chat_model', 'embedding_model']
             for field in required_fields:
                 if not getattr(self.openai, field):
                     return False

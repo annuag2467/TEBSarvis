@@ -11,12 +11,22 @@ from datetime import datetime, timedelta
 from collections import defaultdict, deque
 import weakref
 from dataclasses import asdict
-from .base_agent import AgentStatus
+from enum import Enum
+
 
 from .message_types import (
     BaseMessage, MessageType, TaskRequestMessage, TaskResponseMessage,
     CollaborationRequestMessage, StatusCheckMessage, ErrorMessage, Priority
 )
+
+
+class AgentStatus(Enum):
+    """Agent status - duplicate definition to avoid circular import"""
+    IDLE = "idle"
+    PROCESSING = "processing"
+    ERROR = "error"
+    OFFLINE = "offline"
+
 
 class MessageBus:
     """

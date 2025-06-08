@@ -14,13 +14,35 @@ from datetime import datetime
 import uuid
 import re
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Define paths for environment variable loading
+env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+local_settings_path = os.path.join(os.path.dirname(__file__), '..', 'azure_functions', 'local.settings.json')
+
+# Load environment variables
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+
+# Load from local.settings.json if available
+if os.path.exists(local_settings_path):
+    try:
+        with open(local_settings_path) as f:
+            settings = json.load(f)
+            if 'Values' in settings:
+                for key, value in settings['Values'].items():
+                    if not os.getenv(key):  # Only set if not already set
+                        os.environ[key] = str(value)
+    except Exception as e:
+        print(f"Warning: Could not load local.settings.json: {e}")
 
 # Add the backend path to sys.path to import shared utilities
-backend_path = os.path.join(os.path.dirname(__file__), '..', 'azure-functions', 'shared')
-sys.path.append(backend_path)
+backend_path = os.path.join(os.path.dirname(__file__), '..')
+if backend_path not in sys.path:
+    sys.path.append(backend_path)
 
-from azure_clients import AzureClientManager
-from agent_utils import TextProcessor, DataTransformer, ValidationError
+from azure_functions.shared.azure_clients import AzureClientManager
+from azure_functions.shared.agent_utils import TextProcessor, DataTransformer, ValidationError
 
 class DataIngestionProcessor:
     """
