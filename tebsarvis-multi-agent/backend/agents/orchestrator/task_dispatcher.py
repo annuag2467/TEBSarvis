@@ -18,6 +18,17 @@ from ..core.agent_registry import AgentRegistry, AgentRegistration
 from ..core.agent_communication import MessageBus, AgentCommunicator
 from ..core.message_types import TaskType, Priority, TaskRequestMessage
 from ...config.agent_config import get_agent_config
+# For TaskDispatcher reference (add to files that use it)
+# from .task_dispatcher import TaskDispatcher, LoadBalancingStrategy
+
+# For WorkflowEngine reference (add to files that use it)  
+from .workflow_engine import WorkflowEngine, WorkflowDefinition
+
+# For CollaborationManager reference (add to files that use it)
+from .collaboration_manager import CollaborationManager
+
+# For OrchestrationManager reference (add to files that use it)
+from .orchestration_manager import OrchestrationManager
 
 
 class LoadBalancingStrategy(Enum):

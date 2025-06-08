@@ -1,5 +1,5 @@
 # Core Dependencies
-azure-functions==1.18.0
+azure-functions==1.23.0
 azure-search-documents>=11.4.0
 azure-openai>=1.6.0
 azure-cosmos>=4.5.0

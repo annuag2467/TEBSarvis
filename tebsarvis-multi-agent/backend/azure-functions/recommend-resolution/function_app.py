@@ -12,16 +12,51 @@ import sys
 import os
 from datetime import datetime
 from typing import Dict, Any, Optional, List
+import aiohttp
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+import time
 
-# Add the backend path to sys.path to import our agents
-backend_path = os.path.join(os.path.dirname(__file__), '..', '..', 'agents')
-sys.path.append(backend_path)
+# Add shared utilities
+from ..shared.function_utils import (
+    validate_environment,
+    validate_json_request,
+    create_error_response,
+    check_rate_limit,
+    setup_monitoring,
+    sanitize_input,
+    get_client_ip
+)
+from ..shared.azure_clients import AzureClientManager
 
 # FIXED IMPORTS
 from ...agents.reactive.resolution_agent import ResolutionAgent
 from ...agents.core.agent_registry import get_global_registry
 from ...agents.core.agent_communication import MessageBus
-from ..shared.azure_clients import AzureClientManager
+
+import logging.config
+
+# Configure structured logging
+logging.config.dictConfig({
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'structured': {
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        }
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'structured'
+        }
+    },
+    'root': {
+        'level': os.getenv('LOG_LEVEL', 'INFO'),
+        'handlers': ['console']
+    }
+})
 
 # Initialize global components
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
@@ -33,14 +68,39 @@ azure_manager = None
 message_bus = None
 registry = None
 
+# Global components
+connection_pool = None
+executor = None
+cache = {}
+cache_ttl = {}
+rate_limit_cache = defaultdict(list)
+RATE_LIMIT = int(os.getenv('RATE_LIMIT', '100'))  # requests per minute
+CACHE_DEFAULT_TTL = 300  # 5 minutes
+MAX_WORKERS = int(os.getenv('MAX_WORKERS', '4'))
+
 async def initialize_components():
-    """Initialize agents and Azure components"""
-    global resolution_agent, azure_manager, message_bus, registry
+    """Initialize agents and Azure components with connection pooling and monitoring"""
+    global resolution_agent, azure_manager, message_bus, registry, connection_pool, executor
     
     try:
+        # Validate environment variables
+        validate_environment()
+
+        # Initialize connection pool if not exists
+        if not connection_pool:
+            connection_pool = aiohttp.TCPConnector(
+                limit=100,  # Max connections
+                ttl_dns_cache=300,  # DNS cache TTL
+                ssl=False  # Disable SSL for internal communications
+            )
+        
+        # Initialize thread executor if not exists
+        if not executor:
+            executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
         if not resolution_agent:
-            # Initialize Azure manager
-            azure_manager = AzureClientManager()
+            # Initialize Azure manager with connection pool
+            azure_manager = AzureClientManager(connector=connection_pool)
             await azure_manager.initialize()
             
             # Initialize message bus and registry
@@ -57,16 +117,24 @@ async def initialize_components():
             # Register agent
             await registry.register_agent(resolution_agent)
             
+            # Setup monitoring
+            setup_monitoring(app_name="recommend-resolution")
+            
             logger.info("Resolution Agent components initialized successfully")
             
     except Exception as e:
-        logger.error(f"Error initializing components: {str(e)}")
+        logger.error(f"Error initializing components: {str(e)}", exc_info=True)
+        # Cleanup on failure
+        if connection_pool:
+            await connection_pool.close()
+        if executor:
+            executor.shutdown(wait=False)
         raise
 
 @app.route(route="recommend-resolution", methods=["POST"])
 async def recommend_resolution(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Generate resolution recommendations for an incident.
+    Generate resolution recommendations for an incident with rate limiting and validation.
     
     Expected JSON payload:
     {
@@ -87,41 +155,54 @@ async def recommend_resolution(req: func.HttpRequest) -> func.HttpResponse:
             "confidence_threshold": 0.5
         }
     }
-    
-    Returns:
-    {
-        "incident_id": "INC001",
-        "recommendations": [...],
-        "overall_confidence": 0.85,
-        "similar_incidents_used": 3,
-        "resolution_metadata": {...}
-    }
     """
+    request_id = req.headers.get('x-request-id', f"req_{int(time.time()*1000)}")
+    client_ip = get_client_ip(req)
+    start_time = time.time()
+    
     try:
-        await initialize_components()
+        # Setup request logging context
+        logger.info(f"Processing resolution request {request_id} from {client_ip}")
         
-        # Parse request
-        req_body = req.get_json()
-        if not req_body or 'incident_data' not in req_body:
+        # Check rate limit
+        if not check_rate_limit(client_ip, RATE_LIMIT):
+            return create_error_response("Rate limit exceeded", 429)
+            
+        # Initialize components with retries
+        retry_count = 0
+        while retry_count < 3:
+            try:
+                await initialize_components()
+                break
+            except Exception as e:
+                retry_count += 1
+                if retry_count == 3:
+                    raise
+                await asyncio.sleep(1)
+                
+        # Validate and sanitize request
+        data, error_response = validate_json_request(
+            req,
+            required_fields=['incident_data'],
+            optional_fields=['resolution_options']
+        )
+        if error_response:
+            return error_response
+            
+        # Sanitize input data
+        incident_data = sanitize_input(data['incident_data'])
+        resolution_options = sanitize_input(data.get('resolution_options', {}))
+
+        # Check cache first
+        cache_key = f"{incident_data['id']}:{incident_data['summary']}"
+        if cache_key in cache and time.time() - cache_ttl[cache_key] < CACHE_DEFAULT_TTL:
+            logger.info(f"Cache hit for request {request_id}")
             return func.HttpResponse(
-                json.dumps({"error": "Missing incident_data in request"}),
-                status_code=400,
+                json.dumps(cache[cache_key], indent=2),
+                status_code=200,
                 mimetype="application/json"
             )
-        
-        incident_data = req_body['incident_data']
-        resolution_options = req_body.get('resolution_options', {})
-        
-        # Validate required fields in incident_data
-        required_fields = ['summary']
-        missing_fields = [field for field in required_fields if field not in incident_data]
-        if missing_fields:
-            return func.HttpResponse(
-                json.dumps({"error": f"Missing required fields in incident_data: {missing_fields}"}),
-                status_code=400,
-                mimetype="application/json"
-            )
-        
+
         # Prepare task for resolution agent
         task_data = {
             'type': 'incident_resolution',
@@ -133,9 +214,8 @@ async def recommend_resolution(req: func.HttpRequest) -> func.HttpResponse:
         }
         
         # Process with resolution agent
-        start_time = datetime.now()
         result = await resolution_agent.process_task(task_data)
-        processing_time = (datetime.now() - start_time).total_seconds()
+        processing_time = time.time() - start_time
         
         # Format response
         response = {
@@ -147,20 +227,24 @@ async def recommend_resolution(req: func.HttpRequest) -> func.HttpResponse:
                 "function_name": "recommend-resolution",
                 "processing_time_seconds": processing_time,
                 "timestamp": datetime.now().isoformat(),
+                "request_id": request_id,
                 "api_version": "1.0.0",
                 "rag_enabled": result.get('rag_enabled', False),
-                "templates_used": result.get('templates_used', [])
+                "templates_used": result.get('templates_used', []),
+                "cache_hit": False
             }
         }
         
-        # Add processing metadata from agent
+        # Add processing metadata
         if 'processing_metadata' in result:
             response['resolution_metadata'].update(result['processing_metadata'])
         
-        # Add request tracking
-        response['request_id'] = req.headers.get('x-request-id', 'unknown')
+        # Cache successful results
+        if result.get('overall_confidence', 0.0) > 0.5:
+            cache[cache_key] = response
+            cache_ttl[cache_key] = time.time()
         
-        logger.info(f"Resolution request processed successfully in {processing_time:.2f}s")
+        logger.info(f"Resolution request {request_id} processed successfully in {processing_time:.2f}s")
         
         return func.HttpResponse(
             json.dumps(response, indent=2),
@@ -169,15 +253,12 @@ async def recommend_resolution(req: func.HttpRequest) -> func.HttpResponse:
         )
         
     except Exception as e:
-        logger.error(f"Error in recommend-resolution: {str(e)}")
-        return func.HttpResponse(
-            json.dumps({
-                "error": "Resolution recommendation failed",
-                "message": str(e),
-                "timestamp": datetime.now().isoformat()
-            }),
-            status_code=500,
-            mimetype="application/json"
+        error_time = time.time() - start_time
+        logger.error(f"Error in request {request_id} after {error_time:.2f}s: {str(e)}", exc_info=True)
+        return create_error_response(
+            f"Resolution recommendation failed: {str(e)}",
+            500,
+            {"request_id": request_id, "processing_time": error_time}
         )
 
 @app.route(route="solution-ranking", methods=["POST"])

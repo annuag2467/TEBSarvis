@@ -14,6 +14,13 @@ import traceback
 import time
 import re
 from dataclasses import asdict
+# Add to agent_utils.py
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...agents.core.base_agent import BaseAgent
+    from ...agents.core.agent_registry import AgentRegistry
+
+
 
 class AgentError(Exception):
     """Custom exception for agent-related errors"""
@@ -527,6 +534,18 @@ def set_nested_value(data: Dict[str, Any], path: str, value: Any) -> None:
         current = current[key]
     
     current[keys[-1]] = value
+
+def get_agent_for_task(task_type: str, registry: 'AgentRegistry') -> Optional['BaseAgent']:
+    """Get best agent for a specific task type"""
+    best_agent = registry.get_best_agent_for_capability(task_type)
+    return best_agent
+
+def format_agent_response(agent_result: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
+    """Format agent response for Function app consumption"""
+    return ResponseFormatter.format_success_response(
+        data=agent_result,
+        metadata={'agent_id': agent_id, 'processing_agent': agent_id}
+    )
 
 # Global instances
 cache_manager = CacheManager()

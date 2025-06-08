@@ -8,6 +8,7 @@ import logging
 from typing import Optional, Dict, Any, List
 from .message_types import Priority
 from .agent_communication import MessageBus, MessageRouter
+# from .agent_communication import AgentCommunicator
 from .agent_registry import AgentRegistry, get_global_registry
 from .base_agent import BaseAgent
 

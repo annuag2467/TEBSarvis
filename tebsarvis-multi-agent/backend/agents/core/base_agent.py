@@ -12,7 +12,7 @@ import logging
 import uuid
 from enum import Enum
 from .message_types import Priority  # Replace MessagePriority
-from .agent_communication import MessageBus, AgentCommunicator
+from .agent_communication import MessageBus 
 
 class AgentStatus(Enum):
     IDLE = "idle"
@@ -20,11 +20,6 @@ class AgentStatus(Enum):
     ERROR = "error"
     OFFLINE = "offline"
 
-class MessagePriority(Enum):
-    LOW = 1
-    NORMAL = 2
-    HIGH = 3
-    CRITICAL = 4
 
 @dataclass
 class AgentCapability:
@@ -51,7 +46,7 @@ class BaseAgent(ABC):
     """
     
     def __init__(self, agent_id: str, agent_type: str, capabilities: List[AgentCapability], 
-                 message_bus: MessageBus = None):
+             message_bus: MessageBus = None, agent_system=None):
         self.agent_id = agent_id
         self.agent_type = agent_type
         self.capabilities = capabilities
@@ -63,9 +58,9 @@ class BaseAgent(ABC):
         self.collaborating_agents = set()
         
         # ADD: Communication integration
-        self.message_bus = None
-        self.communicator = None
-        self.agent_system = agent_system
+        self.message_bus = message_bus
+        self.communicator = None  # Will be set when registering
+        self.agent_system = agent_system  # Now properly passed in constructor
         
         self.logger.info(f"Agent {self.agent_id} of type {self.agent_type} initialized")
     

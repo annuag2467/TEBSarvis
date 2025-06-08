@@ -18,6 +18,17 @@ from ..core.agent_registry import AgentRegistry
 from ..core.agent_communication import MessageBus, AgentCommunicator
 from ..core.message_types import TaskType, Priority
 from ...config.agent_config import get_agent_config
+# For TaskDispatcher reference (add to files that use it)
+from .task_dispatcher import TaskDispatcher, LoadBalancingStrategy
+
+# For WorkflowEngine reference (add to files that use it)  
+# from .workflow_engine import WorkflowEngine, WorkflowDefinition
+
+# For CollaborationManager reference (add to files that use it)
+from .collaboration_manager import CollaborationManager
+
+# For OrchestrationManager reference (add to files that use it)
+from .orchestration_manager import OrchestrationManager
 
 class WorkflowState(Enum):
     DRAFT = "draft"
@@ -481,7 +492,11 @@ class WorkflowEngine:
         self.registry = registry
         self.message_bus = message_bus
         self.communicator = AgentCommunicator("workflow_engine", message_bus)
-        
+
+        self.workflow_definitions: Dict[str, WorkflowDefinition] = {}
+        self.active_executions: Dict[str, WorkflowExecution] = {}
+        self.execution_history: List[WorkflowExecution] = []
+            
         config_manager = get_agent_config()
         workflow_config = config_manager.workflow_config
         

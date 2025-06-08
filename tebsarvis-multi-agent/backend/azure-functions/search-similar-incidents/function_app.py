@@ -12,16 +12,191 @@ import sys
 import os
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-
-# Add the backend path to sys.path to import our agents
-backend_path = os.path.join(os.path.dirname(__file__), '..', '..', 'agents')
-sys.path.append(backend_path)
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+import time
+from collections import defaultdict
+import html
+import re
 
 # FIXED IMPORTS
 from ...agents.reactive.search_agent import SearchAgent
 from ...agents.core.agent_registry import get_global_registry
 from ...agents.core.agent_communication import MessageBus
 from ..shared.azure_clients import AzureClientManager
+
+import logging.config
+
+# Global connection pool and thread executor
+connection_pool = None
+executor = None
+
+# Simple in-memory cache with TTL
+cache = {}
+cache_ttl = {}
+
+# Simple rate limiter
+rate_limit_cache = defaultdict(list)
+
+def get_cached_result(key: str, ttl_seconds: int = 300):
+    """Get result from cache if not expired"""
+    if key in cache:
+        if time.time() - cache_ttl.get(key, 0) < ttl_seconds:
+            return cache[key]
+        else:
+            # Cache expired
+            del cache[key]
+            del cache_ttl[key]
+    return None
+
+def set_cached_result(key: str, value, ttl_seconds: int = 300):
+    """Store result in cache with TTL"""
+    cache[key] = value
+    cache_ttl[key] = time.time()
+
+def create_error_response(error_msg: str, status_code: int = 500, details: dict = None):
+    """Create standardized error response"""
+    error_response = {
+        "error": True,
+        "message": error_msg,
+        "timestamp": datetime.now().isoformat(),
+        "status_code": status_code
+    }
+    
+    if details:
+        error_response["details"] = details
+    
+    # Log error for monitoring
+    logger.error(f"API Error {status_code}: {error_msg}", extra=details or {})
+    
+    return func.HttpResponse(
+        json.dumps(error_response),
+        status_code=status_code,
+        mimetype="application/json"
+    )
+
+def validate_json_request(req: func.HttpRequest, required_fields: list = None) -> tuple:
+    """Validate JSON request and return data or error response"""
+    try:
+        if not req.get_body():
+            return None, create_error_response("Request body is required", 400)
+        
+        data = req.get_json()
+        if not data:
+            return None, create_error_response("Invalid JSON in request body", 400)
+        
+        if required_fields:
+            missing = [field for field in required_fields if field not in data]
+            if missing:
+                return None, create_error_response(
+                    f"Missing required fields: {missing}", 400
+                )
+        
+        return data, None
+        
+    except ValueError as e:
+        return None, create_error_response(f"JSON parse error: {str(e)}", 400)
+
+def check_rate_limit(client_ip: str, requests_per_minute: int = 60) -> bool:
+    """Simple rate limiting by IP"""
+    now = time.time()
+    minute_ago = now - 60
+    
+    # Clean old requests
+    rate_limit_cache[client_ip] = [
+        req_time for req_time in rate_limit_cache[client_ip] 
+        if req_time > minute_ago
+    ]
+    
+    # Check rate limit
+    if len(rate_limit_cache[client_ip]) >= requests_per_minute:
+        return False
+    
+    # Add current request
+    rate_limit_cache[client_ip].append(now)
+    return True
+
+def sanitize_input(text: str, max_length: int = 1000) -> str:
+    """Sanitize text input"""
+    if not isinstance(text, str):
+        return str(text)[:max_length]
+    
+    # Remove HTML tags and escape HTML
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html.escape(text)
+    
+    # Limit length
+    return text[:max_length]
+
+def sanitize_request_data(data: dict) -> dict:
+    """Recursively sanitize request data"""
+    if isinstance(data, dict):
+        return {k: sanitize_request_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_request_data(item) for item in data]
+    elif isinstance(data, str):
+        return sanitize_input(data)
+    else:
+        return data
+
+def validate_environment():
+    """Validate required environment variables"""
+    required_vars = [
+        'AZURE_OPENAI_ENDPOINT',
+        'AZURE_OPENAI_KEY',
+        'COSMOS_DB_URL',
+        'COSMOS_DB_KEY',
+        'SEARCH_SERVICE_ENDPOINT',
+        'SEARCH_API_KEY'
+    ]
+    
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {missing_vars}")
+        raise EnvironmentError(f"Missing environment variables: {missing_vars}")
+    
+    logger.info("Environment validation passed")
+
+def record_custom_metric(metric_name: str, value: float, properties: dict = None):
+    """Record custom metric for Application Insights"""
+    try:
+        from opencensus.ext.azure import metrics_exporter
+        from opencensus.stats import aggregation as aggregation_module
+        from opencensus.stats import measure as measure_module
+        from opencensus.stats import stats as stats_module
+        from opencensus.stats import view as view_module
+        from opencensus.tags import tag_map as tag_map_module
+        
+        # This would integrate with Application Insights
+        # For now, just log the metric
+        logger.info(f"Metric: {metric_name} = {value}", extra=properties or {})
+        
+    except ImportError:
+        # Fallback to simple logging
+        logger.info(f"Metric: {metric_name} = {value}", extra=properties or {})
+
+# Configure structured logging
+logging.config.dictConfig({
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'structured': {
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        }
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'structured'
+        }
+    },
+    'root': {
+        'level': os.getenv('LOG_LEVEL', 'INFO'),
+        'handlers': ['console']
+    }
+})
 
 # Initialize global components
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
@@ -35,10 +210,25 @@ registry = None
 
 async def initialize_components():
     """Initialize agents and Azure components"""
-    global search_agent, azure_manager, message_bus, registry
+    global search_agent, azure_manager, message_bus, registry, connection_pool, executor
     
     try:
+        # Validate environment variables first
+        validate_environment()
+
         if not search_agent:
+            # Initialize connection pool for better performance
+            if not connection_pool:
+                connection_pool = aiohttp.TCPConnector(
+                    limit=100,
+                    limit_per_host=30,
+                    keepalive_timeout=30
+                )
+            
+            # Thread pool for CPU-bound operations
+            if not executor:
+                executor = ThreadPoolExecutor(max_workers=4)
+            
             # Initialize Azure manager
             azure_manager = AzureClientManager()
             await azure_manager.initialize()
@@ -100,12 +290,30 @@ async def search_similar_incidents(req: func.HttpRequest) -> func.HttpResponse:
     try:
         await initialize_components()
         
-        # Parse request
-        req_body = req.get_json()
-        if not req_body or 'query' not in req_body:
+        # Rate limiting
+        client_ip = req.headers.get('x-forwarded-for', 'unknown')
+        if not check_rate_limit(client_ip):
+            return create_error_response("Rate limit exceeded", 429)
+        
+        # Start timing for metrics
+        start_time = time.time()
+        
+        # Validate request
+        data, error_response = validate_json_request(req, required_fields=['query'])
+        if error_response:
+            return error_response
+            
+        # Sanitize input data
+        data = sanitize_request_data(data)
+            
+        # Check cache
+        cache_key = f"search:{data['search_type']}:{data['query']}"
+        cached_result = get_cached_result(cache_key)
+        if cached_result:
+            record_custom_metric("cache_hit", 1, {"endpoint": "search-similar-incidents"})
             return func.HttpResponse(
-                json.dumps({"error": "Missing query in request"}),
-                status_code=400,
+                json.dumps(cached_result),
+                status_code=200,
                 mimetype="application/json"
             )
         
@@ -367,6 +575,41 @@ async def search_suggestions(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json"
         )
 
+async def check_azure_services():
+    """Check Azure services health"""
+    if not azure_manager:
+        return {"status": "not_initialized"}
+    return await azure_manager.get_health_status()
+
+async def check_agent_registry():
+    """Check agent registry health"""
+    if not registry:
+        return {"status": "not_initialized"}
+    return registry.get_health_status()
+
+async def check_message_bus():
+    """Check message bus health"""
+    if not message_bus:
+        return {"status": "not_initialized"}
+    return message_bus.get_health_status()
+
+async def check_all_agents():
+    """Check all agents health"""
+    if not search_agent:
+        return {"status": "not_initialized"}
+    
+    try:
+        test_task = {
+            'type': 'semantic_search',
+            'query': 'test query',
+            'max_results': 1,
+            'filters': {}
+        }
+        await search_agent.process_task(test_task)
+        return {"status": "healthy", "test_result": "success"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
 @app.route(route="search-health", methods=["GET"])
 async def search_health(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -376,35 +619,33 @@ async def search_health(req: func.HttpRequest) -> func.HttpResponse:
     try:
         await initialize_components()
         
-        # Check agent status
-        agent_status = search_agent.get_status() if search_agent else {"status": "not_initialized"}
+        # Run health checks in parallel
+        start_time = time.time()
+        health_tasks = [
+            check_azure_services(),
+            check_agent_registry(),
+            check_message_bus(),
+            check_all_agents()
+        ]
         
-        # Check Azure services
-        azure_health = await azure_manager.get_health_status() if azure_manager else {"status": "not_initialized"}
+        results = await asyncio.gather(*health_tasks, return_exceptions=True)
+        azure_health, registry_health, bus_health, agents_health = results
         
-        # Test search functionality
-        search_test = {"status": "not_tested"}
-        if search_agent:
-            try:
-                test_task = {
-                    'type': 'semantic_search',
-                    'query': 'test query',
-                    'max_results': 1,
-                    'filters': {}
-                }
-                test_result = await search_agent.process_task(test_task)
-                search_test = {"status": "healthy", "test_result": "success"}
-            except Exception as e:
-                search_test = {"status": "unhealthy", "error": str(e)}
+        # Handle exceptions
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Health check {i} failed: {result}")
         
         health_data = {
-            "status": "healthy" if search_agent else "unhealthy",
-            "agent_status": agent_status,
-            "azure_services": azure_health,
-            "search_functionality": search_test,
+            "status": "healthy" if all(not isinstance(r, Exception) and r.get("status") == "healthy" for r in results) else "unhealthy",
+            "agent_status": agents_health if not isinstance(agents_health, Exception) else {"error": str(agents_health)},
+            "azure_services": azure_health if not isinstance(azure_health, Exception) else {"error": str(azure_health)},
+            "registry": registry_health if not isinstance(registry_health, Exception) else {"error": str(registry_health)},
+            "message_bus": bus_health if not isinstance(bus_health, Exception) else {"error": str(bus_health)},
             "cache_size": len(search_agent.search_cache) if search_agent else 0,
             "timestamp": datetime.now().isoformat(),
-            "uptime": "available" if search_agent else "unavailable"
+            "uptime": "available" if search_agent else "unavailable",
+            "processing_time": time.time() - start_time
         }
         
         status_code = 200 if search_agent else 503

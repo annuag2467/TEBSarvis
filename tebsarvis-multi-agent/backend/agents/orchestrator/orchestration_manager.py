@@ -15,6 +15,17 @@ from .workflow_engine import WorkflowEngine, WorkflowDefinition
 from ..core.agent_registry import AgentRegistry, get_global_registry
 from ..core.agent_communication import MessageBus
 from ...config.agent_config import get_agent_config
+# For TaskDispatcher reference (add to files that use it)
+from .task_dispatcher import TaskDispatcher, LoadBalancingStrategy
+
+# For WorkflowEngine reference (add to files that use it)  
+from .workflow_engine import WorkflowEngine, WorkflowDefinition
+
+# For CollaborationManager reference (add to files that use it)
+from .collaboration_manager import CollaborationManager
+
+# For OrchestrationManager reference (add to files that use it)
+# from .orchestration_manager import OrchestrationManager
 
 class OrchestrationManager:
     """
@@ -36,7 +47,7 @@ class OrchestrationManager:
         
         # Configuration
         self.config_manager = get_agent_config()
-        orchestration_config = config_manager.orchestration_config
+        orchestration_config = self.config_manager.orchestration_config
         self.max_concurrent_workflows = orchestration_config['max_concurrent_workflows']
         
         self.logger = logging.getLogger("orchestration_manager")

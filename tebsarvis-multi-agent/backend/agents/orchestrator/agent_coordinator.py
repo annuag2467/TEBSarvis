@@ -18,6 +18,18 @@ from ..core.message_types import (
     TaskType, Priority, create_task_request, create_collaboration_request
 )
 from ...config.agent_config import get_agent_config
+# For TaskDispatcher reference (add to files that use it)
+from .task_dispatcher import TaskDispatcher, LoadBalancingStrategy
+
+# For WorkflowEngine reference (add to files that use it)  
+from .workflow_engine import WorkflowEngine, WorkflowDefinition
+
+# For CollaborationManager reference (add to files that use it)
+from .collaboration_manager import CollaborationManager
+
+# For OrchestrationManager reference (add to files that use it)
+from .orchestration_manager import OrchestrationManager
+
 
 class WorkflowStatus(Enum):
     PENDING = "pending"

@@ -18,6 +18,17 @@ from ..core.agent_registry import AgentRegistry
 from ..core.agent_communication import MessageBus, AgentCommunicator
 from ..core.message_types import create_collaboration_request, Priority
 from ...config.agent_config import get_agent_config
+# For TaskDispatcher reference (add to files that use it)
+from .task_dispatcher import TaskDispatcher, LoadBalancingStrategy
+
+# For WorkflowEngine reference (add to files that use it)  
+from .workflow_engine import WorkflowEngine, WorkflowDefinition
+
+# For CollaborationManager reference (add to files that use it)
+# from .collaboration_manager import CollaborationManager
+
+# For OrchestrationManager reference (add to files that use it)
+from .orchestration_manager import OrchestrationManager
 
 class CollaborationType(Enum):
     CONSENSUS_BUILDING = "consensus_building"
@@ -1080,7 +1091,7 @@ class CollaborationManager:
             self.logger.error(f"Error notifying agent joined: {str(e)}")
     
     async def _notify_consensus_result(self, session: CollaborationSession, 
-                                     consensus_result: Dict[str, Any]):
+                                 consensus_result: Dict[str, Any]):
         """Notify all agents of consensus result"""
         try:
             for agent_id in session.participating_agents:
@@ -1097,4 +1108,4 @@ class CollaborationManager:
                     self.logger.warning(f"Failed to notify agent {agent_id} of consensus: {str(e)}")
                     
         except Exception as e:
-            self.logger.error(f"Error")
+            self.logger.error(f"Error notifying consensus result: {str(e)}")

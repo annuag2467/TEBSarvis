@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
-from .message_types import Priority 
+from ..agents.core.message_types import Priority 
 
 
 class AgentType(Enum):

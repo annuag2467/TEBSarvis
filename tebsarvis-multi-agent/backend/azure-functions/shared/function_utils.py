@@ -8,6 +8,9 @@ import json
 from datetime import datetime
 from typing import Dict, Any, Optional
 import azure.functions as func
+from ...agents.core.agent_registry import get_global_registry
+from ...agents.core.agent_communication import MessageBus
+from .azure_clients import AzureClientManager
 
 class FunctionResponse:
     """Standardized response handler for Azure Functions"""

@@ -11,21 +11,67 @@ import asyncio
 import sys
 import os
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+import aiohttp
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+import time
 
-# Add the backend path to sys.path to import our agents
-backend_path = os.path.join(os.path.dirname(__file__), '..', '..', 'agents')
-sys.path.append(backend_path)
+# Add shared utilities
+from ..shared.function_utils import (
+    validate_environment,
+    validate_json_request,
+    create_error_response,
+    check_rate_limit,
+    setup_monitoring,
+    sanitize_input,
+    get_client_ip
+)
+from ..shared.azure_clients import AzureClientManager
 
-from core.agent_registry import get_global_registry, initialize_global_registry
-from core.agent_communication import MessageBus
-from shared.azure_clients import AzureClientManager
-from reactive.resolution_agent import ResolutionAgent
-from reactive.search_agent import SearchAgent
-from reactive.conversation_agent import ConversationAgent
-from reactive.context_agent import ContextAgent
-from proactive.pattern_detection_agent import PatternDetectionAgent
-from proactive.alerting_agent import AlertingAgent
+# FIXED IMPORTS
+from ...agents.core.agent_registry import get_global_registry, initialize_global_registry
+from ...agents.core.agent_communication import MessageBus
+from ...agents.reactive.resolution_agent import ResolutionAgent
+from ...agents.reactive.search_agent import SearchAgent
+from ...agents.reactive.conversation_agent import ConversationAgent
+from ...agents.reactive.context_agent import ContextAgent
+from ...agents.proactive.pattern_detection_agent import PatternDetectionAgent
+from ...agents.proactive.alerting_agent import AlertingAgent
+
+import logging.config
+
+# Configure structured logging
+logging.config.dictConfig({
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'structured': {
+            'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        }
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'structured'
+        }
+    },
+    'root': {
+        'level': os.getenv('LOG_LEVEL', 'INFO'),
+        'handlers': ['console']
+    }
+})
+
+# Global components
+connection_pool = None
+executor = None
+cache = {}
+cache_ttl = {}
+rate_limit_cache = defaultdict(list)
+RATE_LIMIT = int(os.getenv('RATE_LIMIT', '100'))  # requests per minute
+CACHE_DEFAULT_TTL = 60  # 1 minute for health checks
+MAX_WORKERS = int(os.getenv('MAX_WORKERS', '4'))
 
 # Initialize global components
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
@@ -38,13 +84,28 @@ registry = None
 agents = {}
 
 async def initialize_agents():
-    """Initialize all agents and components"""
-    global azure_manager, message_bus, registry, agents
+    """Initialize all agents and components with connection pooling and monitoring"""
+    global azure_manager, message_bus, registry, agents, connection_pool, executor
     
     try:
+        # Validate environment variables
+        validate_environment()
+
+        # Initialize connection pool if not exists
+        if not connection_pool:
+            connection_pool = aiohttp.TCPConnector(
+                limit=100,  # Max connections
+                ttl_dns_cache=300,  # DNS cache TTL
+                ssl=False  # Disable SSL for internal communications
+            )
+        
+        # Initialize thread executor if not exists
+        if not executor:
+            executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
         if not azure_manager:
-            # Initialize Azure manager
-            azure_manager = AzureClientManager()
+            # Initialize Azure manager with connection pool
+            azure_manager = AzureClientManager(connector=connection_pool)
             await azure_manager.initialize()
             
             # Initialize message bus and registry
@@ -53,30 +114,69 @@ async def initialize_agents():
             
             registry = await initialize_global_registry()
             
-            # Initialize agents
-            agents['resolution'] = ResolutionAgent()
-            agents['search'] = SearchAgent()
-            agents['conversation'] = ConversationAgent()
-            agents['context'] = ContextAgent()
-            agents['pattern_detection'] = PatternDetectionAgent()
-            agents['alerting'] = AlertingAgent()
+            # Initialize agents with parallel startup
+            agent_classes = {
+                'resolution': ResolutionAgent,
+                'search': SearchAgent,
+                'conversation': ConversationAgent,
+                'context': ContextAgent,
+                'pattern_detection': PatternDetectionAgent,
+                'alerting': AlertingAgent
+            }
             
-            # Start agents
-            for agent_name, agent in agents.items():
-                await agent.start()
-                await registry.register_agent(agent)
-                logger.info(f"{agent_name} agent initialized successfully")
+            # Create and start agents in parallel
+            async def init_agent(name, agent_class):
+                try:
+                    agent = agent_class()
+                    await agent.start()
+                    await registry.register_agent(agent)
+                    logger.info(f"{name} agent initialized successfully")
+                    return name, agent
+                except Exception as e:
+                    logger.error(f"Error initializing {name} agent: {str(e)}", exc_info=True)
+                    raise
             
-            logger.info("All system components initialized successfully")
+            init_tasks = [
+                init_agent(name, cls) 
+                for name, cls in agent_classes.items()
+            ]
+            agent_results = await asyncio.gather(*init_tasks, return_exceptions=True)
+            
+            # Process results and handle any failures
+            failed_agents = []
+            for result in agent_results:
+                if isinstance(result, Exception):
+                    failed_agents.append(str(result))
+                else:
+                    name, agent = result
+                    agents[name] = agent
+            
+            if failed_agents:
+                raise Exception(f"Failed to initialize agents: {', '.join(failed_agents)}")
+            
+            # Setup monitoring
+            setup_monitoring(app_name="health-check")
+            
+            logger.info(f"All system components initialized successfully with {len(agents)} agents")
             
     except Exception as e:
-        logger.error(f"Error initializing system components: {str(e)}")
+        logger.error(f"Error initializing system components: {str(e)}", exc_info=True)
+        # Cleanup on failure
+        if connection_pool:
+            await connection_pool.close()
+        if executor:
+            executor.shutdown(wait=False)
+        for agent in agents.values():
+            try:
+                await agent.stop()
+            except:
+                pass
         raise
 
 @app.route(route="health-check", methods=["GET"])
 async def health_check(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Comprehensive health check endpoint for the multi-agent system.
+    Comprehensive health check endpoint for the multi-agent system with rate limiting and parallel checks.
     
     Returns:
     {
@@ -88,139 +188,147 @@ async def health_check(req: func.HttpRequest) -> func.HttpResponse:
             "message_bus": {...},
             "agents": {...}
         },
-        "overall_score": 95,
+        "performance": {...},
         "issues": [...],
         "recommendations": [...]
     }
     """
-    
-    logger.info("Health check request received")
+    request_id = req.headers.get('x-request-id', f"req_{int(time.time()*1000)}")
+    client_ip = get_client_ip(req)
+    start_time = time.time()
     
     try:
-        # Initialize components if needed
-        await initialize_agents()
+        # Setup request logging context
+        logger.info(f"Processing health check request {request_id} from {client_ip}")
         
-        health_results = {
-            "status": "healthy",
+        # Check rate limit with higher allowance for health checks
+        if not check_rate_limit(client_ip, RATE_LIMIT * 2):  # Double rate limit for health checks
+            return create_error_response("Rate limit exceeded", 429)
+            
+        # Initialize components with retries
+        retry_count = 0
+        while retry_count < 3:
+            try:
+                await initialize_agents()
+                break
+            except Exception as e:
+                retry_count += 1
+                if retry_count == 3:
+                    raise
+                await asyncio.sleep(1)
+
+        # Get system resource usage
+        try:
+            import psutil
+            process = psutil.Process(os.getpid())
+            resource_usage = {
+                "cpu_percent": psutil.cpu_percent(interval=0.1),
+                "memory_percent": psutil.virtual_memory().percent,
+                "process_memory_mb": process.memory_info().rss / 1024 / 1024,
+                "open_files": len(process.open_files()),
+                "threads": process.num_threads(),
+                "connections": len(process.connections())
+            }
+        except ImportError:
+            resource_usage = {"note": "psutil not available"}
+        except Exception as e:
+            resource_usage = {"error": str(e)}
+
+        # Run all health checks in parallel
+        health_tasks = {
+            "azure": check_azure_services(),
+            "registry": check_agent_registry(),
+            "message_bus": check_message_bus(),
+            "agents": check_all_agents(),
+            "workspace": check_workspace_health(),
+            "network": check_network_health()
+        }
+        
+        results = await asyncio.gather(*health_tasks.values(), return_exceptions=True)
+        health_results = dict(zip(health_tasks.keys(), results))
+        
+        # Process results and calculate health score
+        overall_score = 100
+        issues = []
+        recommendations = []
+        components = {}
+        
+        for component, result in health_results.items():
+            if isinstance(result, Exception):
+                components[component] = {
+                    "status": "error",
+                    "error": str(result),
+                    "timestamp": datetime.now().isoformat()
+                }
+                issues.append(f"{component} check failed: {str(result)}")
+                overall_score -= 20
+                recommendations.append(f"Investigate {component} failure and restart if necessary")
+            else:
+                components[component] = result
+                if result.get("status") != "healthy":
+                    issues.append(f"{component} is {result.get('status', 'unhealthy')}")
+                    overall_score -= 10
+                    if "recommendations" in result:
+                        recommendations.extend(result["recommendations"])
+
+        # Add performance metrics
+        performance = {
+            "processing_time": time.time() - start_time,
+            "resource_usage": resource_usage,
+            "connection_pool": {
+                "active_connections": connection_pool.size if connection_pool else 0,
+                "limit": connection_pool.limit if connection_pool else 0
+            },
+            "thread_pool": {
+                "active_workers": len(agents),
+                "max_workers": MAX_WORKERS
+            }
+        }
+
+        # Determine overall status
+        status = "healthy"
+        if overall_score < 60:
+            status = "unhealthy"
+        elif overall_score < 80:
+            status = "degraded"
+
+        response = {
+            "status": status,
             "timestamp": datetime.now().isoformat(),
-            "components": {},
-            "overall_score": 100,
-            "issues": [],
-            "recommendations": [],
+            "request_id": request_id,
+            "components": components,
+            "performance": performance,
+            "overall_score": max(0, overall_score),
+            "issues": issues,
+            "recommendations": recommendations,
             "version": "1.0.0"
         }
-        
-        # Check Azure services
-        try:
-            azure_health = await check_azure_services()
-            health_results["components"]["azure_services"] = azure_health
-            
-            if azure_health["status"] != "healthy":
-                health_results["issues"].append("Azure services degraded")
-                health_results["overall_score"] -= 20
-                
-        except Exception as e:
-            health_results["components"]["azure_services"] = {
-                "status": "error",
-                "error": str(e)
-            }
-            health_results["issues"].append(f"Azure services error: {str(e)}")
-            health_results["overall_score"] -= 30
-        
-        # Check agent registry
-        try:
-            registry_health = await check_agent_registry()
-            health_results["components"]["agent_registry"] = registry_health
-            
-            if registry_health["status"] != "healthy":
-                health_results["issues"].append("Agent registry issues")
-                health_results["overall_score"] -= 15
-                
-        except Exception as e:
-            health_results["components"]["agent_registry"] = {
-                "status": "error",
-                "error": str(e)
-            }
-            health_results["issues"].append(f"Agent registry error: {str(e)}")
-            health_results["overall_score"] -= 20
-        
-        # Check message bus
-        try:
-            message_bus_health = await check_message_bus()
-            health_results["components"]["message_bus"] = message_bus_health
-            
-            if message_bus_health["status"] != "healthy":
-                health_results["issues"].append("Message bus issues")
-                health_results["overall_score"] -= 15
-                
-        except Exception as e:
-            health_results["components"]["message_bus"] = {
-                "status": "error",
-                "error": str(e)
-            }
-            health_results["issues"].append(f"Message bus error: {str(e)}")
-            health_results["overall_score"] -= 20
-        
-        # Check individual agents
-        try:
-            agents_health = await check_all_agents()
-            health_results["components"]["agents"] = agents_health
-            
-            unhealthy_agents = [
-                agent_id for agent_id, status in agents_health.items()
-                if status.get("status") != "healthy"
-            ]
-            
-            if unhealthy_agents:
-                health_results["issues"].append(f"Unhealthy agents: {', '.join(unhealthy_agents)}")
-                health_results["overall_score"] -= len(unhealthy_agents) * 10
-                
-        except Exception as e:
-            health_results["components"]["agents"] = {
-                "status": "error",
-                "error": str(e)
-            }
-            health_results["issues"].append(f"Agent health check error: {str(e)}")
-            health_results["overall_score"] -= 25
-        
-        # Determine overall status
-        if health_results["overall_score"] >= 90:
-            health_results["status"] = "healthy"
-        elif health_results["overall_score"] >= 70:
-            health_results["status"] = "degraded"
-            health_results["recommendations"].append("Some components need attention")
-        else:
-            health_results["status"] = "unhealthy"
-            health_results["recommendations"].append("Immediate attention required")
-        
-        # Add system-level recommendations
-        if health_results["overall_score"] < 100:
-            health_results["recommendations"].append("Check system logs for detailed error information")
-        
-        # Set appropriate HTTP status code
-        status_code = 200 if health_results["status"] == "healthy" else 503
-        
+
+        # Cache successful health check results briefly
+        if status == "healthy":
+            cache_key = "health_check"
+            cache[cache_key] = response
+            cache_ttl[cache_key] = time.time()
+
+        logger.info(f"Health check {request_id} completed in {time.time() - start_time:.2f}s with status: {status}")
+
         return func.HttpResponse(
-            json.dumps(health_results, indent=2),
-            status_code=status_code,
+            json.dumps(response, indent=2),
+            status_code=200 if status != "unhealthy" else 503,
             mimetype="application/json"
         )
-        
+
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        
-        error_response = {
-            "status": "error",
-            "timestamp": datetime.now().isoformat(),
-            "error": str(e),
-            "overall_score": 0,
-            "message": "Health check system failure"
-        }
-        
-        return func.HttpResponse(
-            json.dumps(error_response),
-            status_code=503,
-            mimetype="application/json"
+        error_time = time.time() - start_time
+        logger.error(f"Health check {request_id} failed after {error_time:.2f}s: {str(e)}", exc_info=True)
+        return create_error_response(
+            f"Health check failed: {str(e)}",
+            500,
+            {
+                "request_id": request_id,
+                "processing_time": error_time,
+                "components_initialized": bool(agents)
+            }
         )
 
 async def check_azure_services() -> Dict[str, Any]:
@@ -335,7 +443,7 @@ async def check_all_agents() -> Dict[str, Any]:
                     "last_checked": datetime.now().isoformat()
                 }
         
-        return agent_health
+    return agent_health
 
     async def check_individual_agent(agent_name: str, agent) -> Dict[str, Any]:
         """
@@ -577,6 +685,18 @@ async def check_all_agents() -> Dict[str, Any]:
         agent_name = req.route_params.get('agent_name')
         logger.info(f"Agent-specific health check requested for: {agent_name}")
         
+        # Add resource monitoring
+        try:
+            import psutil
+            resource_usage = {
+                "cpu_percent": psutil.cpu_percent(),
+                "memory_percent": psutil.virtual_memory().percent
+            }
+        except ImportError:
+            resource_usage = {"note": "psutil not available"}
+        except Exception as e:
+            resource_usage = {"error": str(e)}
+        
         try:
             await initialize_agents()
             
@@ -600,6 +720,8 @@ async def check_all_agents() -> Dict[str, Any]:
                 "configuration": getattr(agent, 'config', {}),
                 "recent_errors": getattr(agent, 'recent_errors', [])
             }
+            
+            agent_health["resource_usage"] = resource_usage  # Add this line before return
             
             status_code = 200 if agent_health["status"] == "healthy" else 503
             
@@ -631,8 +753,21 @@ async def check_all_agents() -> Dict[str, Any]:
         Return health metrics in Prometheus format for monitoring integration
         """
         try:
-            await initialize_agents()
-            
+            # Add resource monitoring
+            try:
+                import psutil
+                resource_usage = {
+                    "cpu_percent": psutil.cpu_percent(),
+                    "memory_percent": psutil.virtual_memory().percent
+                }
+                # Add resource metrics
+                metrics.append(f'tebsarvis_cpu_percent {resource_usage["cpu_percent"]}')
+                metrics.append(f'tebsarvis_memory_percent {resource_usage["memory_percent"]}')
+            except ImportError:
+                metrics.append('# psutil not available for resource monitoring')
+            except Exception as e:
+                metrics.append(f'# Error getting resource metrics: {str(e)}')
+        
             # Basic health check
             basic_health = await check_azure_services()
             agents_health = await check_all_agents()
@@ -680,3 +815,125 @@ async def check_all_agents() -> Dict[str, Any]:
                 status_code=503,
                 mimetype="text/plain"
             )
+
+async def check_workspace_health():
+    """Check workspace components and file system health"""
+    try:
+        workspace_health = {
+            "status": "healthy",
+            "components": {},
+            "recommendations": []
+        }
+        
+        # Check agent files
+        agent_files = {
+            "resolution_agent": "agents/reactive/resolution_agent.py",
+            "search_agent": "agents/reactive/search_agent.py",
+            "conversation_agent": "agents/reactive/conversation_agent.py",
+            "context_agent": "agents/reactive/context_agent.py",
+            "pattern_detection_agent": "agents/proactive/pattern_detection_agent.py",
+            "alerting_agent": "agents/proactive/alerting_agent.py"
+        }
+        
+        missing_files = []
+        for name, path in agent_files.items():
+            full_path = os.path.join(os.path.dirname(__file__), "..", "..", path)
+            if not os.path.exists(full_path):
+                missing_files.append(path)
+        
+        if missing_files:
+            workspace_health["status"] = "degraded"
+            workspace_health["components"]["missing_files"] = missing_files
+            workspace_health["recommendations"].append(
+                f"Restore missing agent files: {', '.join(missing_files)}"
+            )
+        
+        # Check write permissions
+        try:
+            test_file = os.path.join(os.path.dirname(__file__), "test_write.tmp")
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+            workspace_health["components"]["write_permissions"] = "ok"
+        except Exception as e:
+            workspace_health["status"] = "degraded"
+            workspace_health["components"]["write_permissions"] = str(e)
+            workspace_health["recommendations"].append(
+                "Fix workspace write permissions"
+            )
+        
+        return workspace_health
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "recommendations": ["Check workspace file system permissions"]
+        }
+
+async def check_network_health():
+    """Check network connectivity and performance"""
+    try:
+        network_health = {
+            "status": "healthy",
+            "components": {},
+            "recommendations": []
+        }
+        
+        # Test connection pool
+        if connection_pool:
+            network_health["components"]["connection_pool"] = {
+                "active_connections": connection_pool.size,
+                "limit": connection_pool.limit
+            }
+            if connection_pool.size > connection_pool.limit * 0.8:
+                network_health["status"] = "degraded"
+                network_health["recommendations"].append(
+                    "High number of active connections, consider increasing pool limit"
+                )
+        
+        # Test basic connectivity
+        basic_urls = [
+            "https://management.azure.com",
+            "https://graph.microsoft.com"
+        ]
+        
+        async def test_url(url):
+            try:
+                async with aiohttp.ClientSession(connector=connection_pool) as session:
+                    start = time.time()
+                    async with session.get(url) as response:
+                        latency = time.time() - start
+                        return url, {
+                            "status": response.status,
+                            "latency": latency
+                        }
+            except Exception as e:
+                return url, {"error": str(e)}
+        
+        # Run connectivity tests in parallel
+        test_results = await asyncio.gather(*[test_url(url) for url in basic_urls])
+        network_health["components"]["connectivity"] = dict(test_results)
+        
+        # Analyze results
+        for url, result in dict(test_results).items():
+            if "error" in result:
+                network_health["status"] = "degraded"
+                network_health["recommendations"].append(
+                    f"Check connectivity to {url}"
+                )
+            elif result.get("latency", 0) > 1.0:  # High latency threshold
+                if network_health["status"] == "healthy":
+                    network_health["status"] = "degraded"
+                network_health["recommendations"].append(
+                    f"High latency to {url}: {result['latency']:.2f}s"
+                )
+        
+        return network_health
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "recommendations": ["Check network configuration and DNS resolution"]
+        }

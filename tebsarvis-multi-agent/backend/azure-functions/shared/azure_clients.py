@@ -18,22 +18,27 @@ from azure.search.documents.models import VectorizedQuery
 from azure.core.credentials import AzureKeyCredential
 from openai import AsyncAzureOpenAI
 import numpy as np
+from ...config.azure_config import get_azure_config
 
 class AzureOpenAIClient:
+
     """
     Async client for Azure OpenAI services.
     Handles chat completions, embeddings, and other AI operations.
     """
-    
+
     def __init__(self):
+        config = get_azure_config()
+        openai_config = config.openai
+        
         self.client = AsyncAzureOpenAI(
-            api_key=os.getenv('AZURE_OPENAI_KEY'),
-            api_version=os.getenv('AZURE_OPENAI_API_VERSION', '2024-02-01'),
-            azure_endpoint=os.getenv('AZURE_OPENAI_ENDPOINT')
+            api_key=openai_config.api_key,
+            api_version=openai_config.api_version,
+            azure_endpoint=openai_config.endpoint
         )
-        self.embedding_model = os.getenv('AZURE_OPENAI_EMBEDDING_MODEL', 'text-embedding-ada-002')
-        self.chat_model = os.getenv('AZURE_OPENAI_CHAT_MODEL', 'gpt-4')
-        self.logger = logging.getLogger("azure.openai")
+        self.embedding_model = openai_config.embedding_model
+        self.chat_model = openai_config.chat_model
+        
     
     async def get_chat_completion(self, messages: List[Dict[str, str]], 
                                  temperature: float = 0.7, max_tokens: int = 1000,
@@ -534,6 +539,11 @@ class AzureClientManager:
     async def get_chat_completion(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """Get chat completion using OpenAI"""
         return await self.openai_client.get_chat_completion(messages, **kwargs)
+    
+    def validate_azure_configuration() -> Dict[str, bool]:
+        """Validate all Azure service configurations"""
+        config = get_azure_config()
+        return config.validate_configuration()
     
     async def get_embeddings(self, texts: Union[str, List[str]]) -> Union[List[float], List[List[float]]]:
         """Generate embeddings using OpenAI"""

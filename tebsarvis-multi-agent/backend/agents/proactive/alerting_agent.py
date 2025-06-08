@@ -14,6 +14,7 @@ from collections import defaultdict, Counter
 
 from ..core.base_agent import BaseAgent, AgentCapability
 from ..shared.azure_clients import AzureClientManager
+from ...config.agent_config import get_agent_config, AgentType
 
 class AlertSeverity(Enum):
     LOW = "low"
@@ -143,31 +144,31 @@ class AlertingAgent(BaseAgent):
     
     
     async def _initialize(self):
-    """Initialize the agent with proper error handling"""
-    try:
-        # Initialize Azure manager
-        await self.azure_manager.initialize()
-        # Start monitoring tasks
-        asyncio.create_task(self._real_time_monitor())
-        asyncio.create_task(self._escalation_manager())
-        asyncio.create_task(self._alert_cleanup())
-        
-        # Verify Azure services are accessible
-        health_status = await self.azure_manager.get_health_status()
-        
-        unhealthy_services = [
-            service for service, status in health_status.items() 
-            if status != 'healthy' and service != 'timestamp'
-        ]
-        
-        if unhealthy_services:
-            self.logger.warning(f"Some Azure services are unhealthy: {unhealthy_services}")
-        
-        self.logger.info(f"{self.agent_type.title()} Agent initialized successfully")
-        
-    except Exception as e:
-        self.logger.error(f"Failed to initialize {self.agent_type} Agent: {str(e)}")
-        raise
+        """Initialize the agent with proper error handling"""
+        try:
+            # Initialize Azure manager
+            await self.azure_manager.initialize()
+            # Start monitoring tasks
+            asyncio.create_task(self._real_time_monitor())
+            asyncio.create_task(self._escalation_manager())
+            asyncio.create_task(self._alert_cleanup())
+            
+            # Verify Azure services are accessible
+            health_status = await self.azure_manager.get_health_status()
+            
+            unhealthy_services = [
+                service for service, status in health_status.items() 
+                if status != 'healthy' and service != 'timestamp'
+            ]
+            
+            if unhealthy_services:
+                self.logger.warning(f"Some Azure services are unhealthy: {unhealthy_services}")
+            
+            self.logger.info(f"{self.agent_type.title()} Agent initialized successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize {self.agent_type} Agent: {str(e)}")
+            raise
     
     def get_capabilities(self) -> List[AgentCapability]:
         """Return agent capabilities"""

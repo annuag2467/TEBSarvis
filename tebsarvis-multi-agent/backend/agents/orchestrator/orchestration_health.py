@@ -1,3 +1,18 @@
+# For TaskDispatcher reference (add to files that use it)
+from .task_dispatcher import TaskDispatcher, LoadBalancingStrategy
+
+# For WorkflowEngine reference (add to files that use it)  
+from .workflow_engine import WorkflowEngine, WorkflowDefinition
+
+# For CollaborationManager reference (add to files that use it)
+from .collaboration_manager import CollaborationManager
+
+# For OrchestrationManager reference (add to files that use it)
+from .orchestration_manager import OrchestrationManager
+import logging
+from datetime import datetime
+from typing import Dict, Any
+
 class OrchestrationHealthMonitor:
     """Monitor health of orchestration components"""
     
