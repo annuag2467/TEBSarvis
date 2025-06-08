@@ -45,7 +45,7 @@ The system is built on a modular architecture with several key components:
 ### Prerequisites
 
 - Python 3.11 or higher
-- Node.js 18+ (for frontend)
+- Node.js 18+ 
 - Azure subscription (for cloud deployment)
 - OpenAI API key
 
