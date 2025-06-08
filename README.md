@@ -54,7 +54,7 @@ The system is built on a modular architecture with several key components:
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/yourusername/TEBSarvis.git
+   git clone https://github.com/annuag2467/TEBSarvis.git
    cd TEBSarvis
    ```
 
